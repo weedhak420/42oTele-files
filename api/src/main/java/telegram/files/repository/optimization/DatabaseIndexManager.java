@@ -36,14 +36,8 @@ public class DatabaseIndexManager {
         futures.add(ensureIndex("idx_file_type", "files", "file_type"));
         futures.add(ensureCompositeIndex("idx_file_chat_status", "files", "chat_id", "status"));
 
-        @SuppressWarnings("rawtypes")
-        List rawFutures = futures;
-
-        @SuppressWarnings("unchecked")
-        Future<Void> result = CompositeFuture.all(rawFutures)
+        return CompositeFuture.all(futures.toArray(Future[]::new))
                 .mapEmpty();
-
-        return result;
     }
 
     /**
