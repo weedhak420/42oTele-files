@@ -16,6 +16,12 @@ import telegram.files.repository.FileRecord;
 import telegram.files.repository.SettingAutoRecords;
 import telegram.files.repository.SettingKey;
 import telegram.files.repository.SettingTimeLimitedDownload;
+import telegram.files.autodownload.AutomationRuleEngine;
+import telegram.files.autodownload.DownloadEngine;
+import telegram.files.autodownload.DownloadScheduler;
+import telegram.files.autodownload.DownloadStateManager;
+import telegram.files.autodownload.MessageWrapper;
+import telegram.files.autodownload.WaitingScanThread;
 
 import java.time.LocalTime;
 import java.util.Arrays;
@@ -43,11 +49,12 @@ public class AutoDownloadVerticle extends AbstractVerticle {
 
     private static final List<String> DEFAULT_FILE_TYPE_ORDER = List.of("photo", "video", "audio", "file");
 
-    // telegramId -> messages
-    private final Map<Long, LinkedList<MessageWrapper>> waitingDownloadMessages = new ConcurrentHashMap<>();
-
-    // telegramId -> waiting scan threads
-    private final Map<Long, LinkedList<WaitingScanThread>> waitingScanThreads = new ConcurrentHashMap<>();
+    private final DownloadStateManager stateManager = new DownloadStateManager();
+    private final DownloadEngine downloadEngine = new DownloadEngine();
+    private final AutomationRuleEngine ruleEngine = new AutomationRuleEngine();
+    private final DownloadScheduler downloadScheduler = new DownloadScheduler();
+    private final Map<Long, LinkedList<MessageWrapper>> waitingDownloadMessages = stateManager.getWaitingDownloadMessages();
+    private final Map<Long, LinkedList<WaitingScanThread>> waitingScanThreads = stateManager.getWaitingScanThreads();
 
     private final SettingAutoRecords autoRecords;
 
@@ -58,8 +65,8 @@ public class AutoDownloadVerticle extends AbstractVerticle {
     public AutoDownloadVerticle() {
         this.autoRecords = AutomationsHolder.INSTANCE.autoRecords();
         AutomationsHolder.INSTANCE.registerOnRemoveListener(removedItems -> removedItems.forEach(item ->
-                waitingDownloadMessages.getOrDefault(item.telegramId, new LinkedList<>())
-                        .removeIf(m -> m.message.chatId == item.chatId)));
+                stateManager.getWaitingMessages(item.telegramId)
+                        .removeIf(m -> m.message().chatId == item.chatId)));
     }
 
     @Override
@@ -67,7 +74,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         initAutoDownload()
                 .compose(v -> this.initEventConsumer())
                 .onSuccess(v -> {
-                    vertx.setPeriodic(0, HISTORY_SCAN_INTERVAL,
+                    downloadScheduler.schedulePeriodic(vertx, 0, HISTORY_SCAN_INTERVAL,
                             id -> {
                                 if (!isDownloadTime()) {
                                     log.debug("Auto download time limited! Skip scan history.");
@@ -88,14 +95,14 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                                                 } else {
                                                     LinkedList<MessageWrapper> messageWrappers = waitingDownloadMessages.get(auto.telegramId);
                                                     if (CollUtil.isEmpty(messageWrappers) ||
-                                                        messageWrappers.stream().noneMatch(w -> w.isHistorical)) {
+                                                        messageWrappers.stream().noneMatch(MessageWrapper::isHistorical)) {
                                                         auto.complete(SettingAutoRecords.HISTORY_DOWNLOAD_STATE);
                                                     }
                                                 }
                                             }
                                         });
                             });
-                    vertx.setPeriodic(0, DOWNLOAD_INTERVAL,
+                    downloadScheduler.schedulePeriodic(vertx, 0, DOWNLOAD_INTERVAL,
                             id -> {
                                 if (!isDownloadTime()) {
                                     log.debug("Auto download time limited! Skip download.");
@@ -459,26 +466,4 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         }
     }
 
-    private static class WaitingScanThread {
-        public long telegramId;
-
-        public long threadChatId;
-
-        public long messageThreadId;
-
-        public String nextFileType;
-
-        public long nextFromMessageId;
-
-        public boolean isComplete;
-
-        public WaitingScanThread(long telegramId, long threadChatId, long messageThreadId) {
-            this.telegramId = telegramId;
-            this.threadChatId = threadChatId;
-            this.messageThreadId = messageThreadId;
-        }
-    }
-
-    private record MessageWrapper(TdApi.Message message, boolean isHistorical) {
-    }
 }
