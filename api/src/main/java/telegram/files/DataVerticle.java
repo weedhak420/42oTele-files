@@ -21,6 +21,7 @@ import telegram.files.repository.impl.FileRepositoryImpl;
 import telegram.files.repository.impl.SettingRepositoryImpl;
 import telegram.files.repository.impl.StatisticRepositoryImpl;
 import telegram.files.repository.impl.TelegramRepositoryImpl;
+import telegram.files.repository.optimization.DatabaseIndexManager;
 
 import java.io.File;
 import java.util.List;
@@ -38,6 +39,8 @@ public class DataVerticle extends AbstractVerticle {
     public static SettingRepository settingRepository;
 
     public static StatisticRepository statisticRepository;
+
+    private DatabaseIndexManager indexManager;
 
     private static SqlConnectOptions sqlConnectOptions;
 
@@ -68,6 +71,7 @@ public class DataVerticle extends AbstractVerticle {
         telegramRepository = new TelegramRepositoryImpl(pool);
         fileRepository = new FileRepositoryImpl(pool);
         statisticRepository = new StatisticRepositoryImpl(pool);
+        indexManager = new DatabaseIndexManager(pool);
         isCompletelyNewInitialization()
                 .compose(isNew -> Future.all(definitions.stream().map(d -> d.createTable(pool)).toList()).map(isNew))
                 .compose(isNew -> settingRepository.<Version>getByKey(SettingKey.version).map(version -> Tuple.tuple(isNew, version)))
@@ -77,6 +81,7 @@ public class DataVerticle extends AbstractVerticle {
                     Version version = tuple.v2 == null ? new Version("0.0.0") : tuple.v2;
                     return Future.all(definitions.stream().map(d -> d.migrate(pool, version, new Version(Start.VERSION))).toList());
                 })
+                .compose(r -> indexManager.ensureIndexes())
                 .compose(r ->
                         settingRepository.createOrUpdate(SettingKey.version.name(), Start.VERSION))
                 .onSuccess(r -> {

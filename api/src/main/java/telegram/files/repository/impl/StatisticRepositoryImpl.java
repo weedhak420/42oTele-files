@@ -4,9 +4,11 @@ import cn.hutool.core.collection.IterUtil;
 import cn.hutool.core.convert.Convert;
 import cn.hutool.log.Log;
 import cn.hutool.log.LogFactory;
+import com.github.benmanes.caffeine.cache.Cache;
 import io.vertx.core.Future;
 import io.vertx.sqlclient.SqlClient;
 import io.vertx.sqlclient.templates.SqlTemplate;
+import telegram.files.cache.CacheProvider;
 import telegram.files.repository.StatisticRecord;
 import telegram.files.repository.StatisticRepository;
 
@@ -16,6 +18,7 @@ import java.util.Map;
 public class StatisticRepositoryImpl extends AbstractSqlRepository implements StatisticRepository {
 
     private static final Log log = LogFactory.get();
+    private final Cache<String, Object> statisticsCache = CacheProvider.statisticsCache();
 
     public StatisticRepositoryImpl(SqlClient sqlClient) {
         super(sqlClient);
@@ -34,6 +37,7 @@ public class StatisticRepositoryImpl extends AbstractSqlRepository implements St
                 .onFailure(
                         err -> log.error("Failed to create statistic record: %s".formatted(err.getMessage()))
                 )
+                .onSuccess(r -> statisticsCache.invalidate(cachePrefix(record.type(), record.relatedId())))
                 .mapEmpty();
     }
 
@@ -42,6 +46,11 @@ public class StatisticRepositoryImpl extends AbstractSqlRepository implements St
                                                             long relatedId,
                                                             long startTime,
                                                             long endTime) {
+        String cacheKey = cacheKey(type, relatedId, startTime, endTime);
+        Object cached = statisticsCache.getIfPresent(cacheKey);
+        if (cached instanceof List<?> cachedList) {
+            return Future.succeededFuture((List<StatisticRecord>) cachedList);
+        }
         return SqlTemplate
                 .forQuery(sqlClient, """
                         SELECT *
@@ -59,9 +68,21 @@ public class StatisticRepositoryImpl extends AbstractSqlRepository implements St
                         "startTime", startTime,
                         "endTime", endTime
                 ))
-                .map(IterUtil::toList)
+                .map(rows -> {
+                    List<StatisticRecord> list = IterUtil.toList(rows);
+                    statisticsCache.put(cacheKey, list);
+                    return list;
+                })
                 .onFailure(
                         err -> log.error("Failed to get range statistics: %s".formatted(err.getMessage()))
                 );
+    }
+
+    private String cacheKey(StatisticRecord.Type type, long relatedId, long startTime, long endTime) {
+        return cachePrefix(type, relatedId) + startTime + ":" + endTime;
+    }
+
+    private String cachePrefix(StatisticRecord.Type type, long relatedId) {
+        return "%s:%s:".formatted(type.name(), relatedId);
     }
 }
