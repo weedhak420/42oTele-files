@@ -5,10 +5,12 @@ import cn.hutool.core.collection.IterUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.log.Log;
 import cn.hutool.log.LogFactory;
+import com.github.benmanes.caffeine.cache.Cache;
 import io.vertx.core.Future;
 import io.vertx.sqlclient.SqlClient;
 import io.vertx.sqlclient.templates.SqlTemplate;
 import telegram.files.Config;
+import telegram.files.cache.CacheProvider;
 import telegram.files.repository.SettingKey;
 import telegram.files.repository.SettingRecord;
 import telegram.files.repository.SettingRepository;
@@ -21,6 +23,7 @@ import java.util.stream.Collectors;
 public class SettingRepositoryImpl extends AbstractSqlRepository implements SettingRepository {
 
     private static final Log log = LogFactory.get();
+    private final Cache<String, Object> settingsCache = CacheProvider.settingsCache();
 
     public SettingRepositoryImpl(SqlClient sqlClient) {
         super(sqlClient);
@@ -42,7 +45,8 @@ public class SettingRepositoryImpl extends AbstractSqlRepository implements Sett
                 .onSuccess(r -> log.trace("Successfully created or updated setting record: %s".formatted(key)))
                 .onFailure(
                         err -> log.error("Failed to create or update setting record: %s".formatted(err.getMessage()))
-                );
+                )
+                .onSuccess(r -> settingsCache.invalidate(key));
     }
 
     @Override
@@ -50,9 +54,26 @@ public class SettingRepositoryImpl extends AbstractSqlRepository implements Sett
         if (CollUtil.isEmpty(keys)) {
             return Future.succeededFuture(List.of());
         }
-        String keyStr = keys.stream()
+        List<String> distinctKeys = keys.stream()
                 .filter(StrUtil::isNotBlank)
                 .distinct()
+                .toList();
+
+        List<SettingRecord> cached = distinctKeys.stream()
+                .map(settingsCache::getIfPresent)
+                .filter(SettingRecord.class::isInstance)
+                .map(SettingRecord.class::cast)
+                .toList();
+
+        List<String> missingKeys = distinctKeys.stream()
+                .filter(k -> settingsCache.getIfPresent(k) == null)
+                .toList();
+
+        if (missingKeys.isEmpty()) {
+            return Future.succeededFuture(cached);
+        }
+
+        String keyStr = missingKeys.stream()
                 .map(key -> StrUtil.wrap(key, "'"))
                 .collect(Collectors.joining(","));
 
@@ -62,7 +83,13 @@ public class SettingRepositoryImpl extends AbstractSqlRepository implements Sett
                         """.formatted(SettingRecord.KEY_FIELD, SettingRecord.KEY_FIELD, keyStr))
                 .mapTo(SettingRecord.ROW_MAPPER)
                 .execute(Collections.emptyMap())
-                .map(IterUtil::toList)
+                .map(rows -> {
+                    List<SettingRecord> list = IterUtil.toList(rows);
+                    list.forEach(record -> settingsCache.put(record.key(), record));
+                    List<SettingRecord> merged = CollUtil.newArrayList(cached);
+                    merged.addAll(list);
+                    return merged;
+                })
                 .onSuccess(r -> log.trace("Successfully fetched setting record for keys: " + keyStr))
                 .onFailure(
                         err -> log.error("Failed to fetch setting record: %s".formatted(err.getMessage()))
@@ -72,6 +99,10 @@ public class SettingRepositoryImpl extends AbstractSqlRepository implements Sett
     @Override
     @SuppressWarnings("unchecked")
     public <T> Future<T> getByKey(SettingKey key) {
+        Object cached = settingsCache.getIfPresent(key.name());
+        if (cached != null) {
+            return Future.succeededFuture((T) cached);
+        }
         return SqlTemplate
                 .forQuery(sqlClient, """
                         SELECT value FROM setting_record WHERE %s = #{key}
@@ -79,10 +110,14 @@ public class SettingRepositoryImpl extends AbstractSqlRepository implements Sett
                 .mapTo(row -> row.getString("value"))
                 .execute(Map.of("key", key.name()))
                 .map(rs -> {
+                    T value;
                     if (rs.size() == 1) {
-                        return (T) key.converter.apply(rs.iterator().next());
+                        value = (T) key.converter.apply(rs.iterator().next());
+                    } else {
+                        value = key.defaultValue == null ? null : (T) key.defaultValue;
                     }
-                    return key.defaultValue == null ? null : (T) key.defaultValue;
+                    settingsCache.put(key.name(), value);
+                    return value;
                 })
                 .onSuccess(r -> log.trace("Successfully fetched setting record for key: " + key))
                 .onFailure(

@@ -19,13 +19,11 @@ import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.json.Json;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
-import io.vertx.ext.healthchecks.HealthChecks;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BodyHandler;
 import io.vertx.ext.web.handler.CorsHandler;
 import io.vertx.ext.web.handler.SessionHandler;
-import io.vertx.ext.web.healthchecks.HealthCheckHandler;
 import io.vertx.ext.web.sstore.LocalSessionStore;
 import io.vertx.ext.web.sstore.SessionStore;
 import org.drinkless.tdlib.TdApi;
@@ -33,6 +31,7 @@ import org.jooq.lambda.function.Function2;
 import telegram.files.repository.SettingAutoRecords;
 import telegram.files.repository.SettingKey;
 import telegram.files.repository.SettingRecord;
+import telegram.files.handler.HealthCheckHandler;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -131,12 +130,12 @@ public class HttpVerticle extends AbstractVerticle {
                     );
         }
 
-        HealthChecks hc = HealthChecks.create(vertx);
-        hc.register("http-server", Promise::complete);
+        HealthCheckHandler healthCheckHandler = new HealthCheckHandler(vertx);
 
-        router.get("/").handler(ctx -> ctx.response().end("Hello World!"));
-        router.get("/health").handler(HealthCheckHandler.createWithHealthChecks(hc));
-        router.get("/version").handler(ctx -> ctx.json(new JsonObject().put("version", Start.VERSION)));
+        router.get("/").handler(healthCheckHandler::handleHello);
+        router.get("/health").handler(healthCheckHandler::handleHealth);
+        router.get("/metrics").handler(healthCheckHandler::handleMetrics);
+        router.get("/version").handler(ctx -> healthCheckHandler.handleVersion(ctx, Start.VERSION));
         router.route("/ws").handler(this::handleWebSocket);
 
         router.get("/settings").handler(this::handleSettings);
