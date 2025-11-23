@@ -37,7 +37,15 @@ public class StatisticRepositoryImpl extends AbstractSqlRepository implements St
                 .onFailure(
                         err -> log.error("Failed to create statistic record: %s".formatted(err.getMessage()))
                 )
-                .onSuccess(r -> statisticsCache.invalidate(cachePrefix(record.type(), record.relatedId())))
+                .onSuccess(r -> {
+                    try {
+                        long relatedId = Long.parseLong(record.relatedId());
+                        statisticsCache.invalidate(cachePrefix(record.type(), relatedId));
+                    } catch (NumberFormatException e) {
+                        log.warn("Invalid relatedId format: {}", record.relatedId());
+                        statisticsCache.invalidateAll();
+                    }
+                })
                 .mapEmpty();
     }
 

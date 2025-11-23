@@ -385,7 +385,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                 .mapToObj(i -> messages.poll())
                 .toList();
         downloadMessages.forEach(messageWrapper -> {
-            TdApi.Message message = messageWrapper.message;
+            TdApi.Message message = messageWrapper.getMessage();
             Integer fileId = TdApiHelp.getFileId(message);
             log.debug("Start download file: %s".formatted(fileId));
             telegramVerticle.startDownload(message.chatId, message.id, fileId)

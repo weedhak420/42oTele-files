@@ -33,7 +33,7 @@ public class DatabaseIndexManager {
                 ensureIndex("idx_file_record_start_date", "file_record", "start_date"),
                 ensureIndex("idx_file_record_chat_download", "file_record", "chat_id, download_status")
         );
-        return CompositeFuture.all(futures)
+        return CompositeFuture.all(futures.toArray(new Future[0]))
                 .mapEmpty();
     }
 

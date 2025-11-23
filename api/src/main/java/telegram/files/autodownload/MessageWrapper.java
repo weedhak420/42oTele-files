@@ -9,4 +9,8 @@ import org.drinkless.tdlib.TdApi;
  * type without depending on {@link telegram.files.AutoDownloadVerticle} internals.
  */
 public record MessageWrapper(TdApi.Message message, boolean isHistorical) {
+
+    public TdApi.Message getMessage() {
+        return this.message;
+    }
 }
