@@ -36,8 +36,7 @@ public class DatabaseIndexManager {
         futures.add(ensureIndex("idx_file_type", "files", "file_type"));
         futures.add(ensureCompositeIndex("idx_file_chat_status", "files", "chat_id", "status"));
         
-        // FIX: Use CompositeFuture.all(List) instead of array
-        return CompositeFuture.all(new ArrayList<>(futures))
+        return CompositeFuture.join(futures)
                 .mapEmpty();
     }
     
