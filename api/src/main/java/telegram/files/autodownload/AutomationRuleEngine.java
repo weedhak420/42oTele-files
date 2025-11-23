@@ -15,6 +15,14 @@ import java.util.function.Predicate;
  */
 public class AutomationRuleEngine {
 
+    /**
+     * Returns the highest priority automation that satisfies the supplied matcher.
+     * Lower {@code priority} values are considered higher priority.
+     *
+     * @param automations all configured automations
+     * @param matcher     predicate representing the current match criteria
+     * @return an optional automation sorted by ascending priority
+     */
     public Optional<SettingAutoRecords.Automation> selectBestMatch(List<SettingAutoRecords.Automation> automations,
                                                                    Predicate<SettingAutoRecords.Automation> matcher) {
         return automations.stream()

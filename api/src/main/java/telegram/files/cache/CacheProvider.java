@@ -35,18 +35,30 @@ public final class CacheProvider {
     private CacheProvider() {
     }
 
+    /**
+     * Returns the singleton cache for configuration settings.
+     */
     public static Cache<String, Object> settingsCache() {
         return SETTINGS_CACHE;
     }
 
+    /**
+     * Returns the singleton cache for download and transfer statistics snapshots.
+     */
     public static Cache<String, Object> statisticsCache() {
         return STATISTICS_CACHE;
     }
 
+    /**
+     * Returns the singleton cache for chat lists per Telegram account.
+     */
     public static Cache<Long, List<TelegramRecord>> chatCache() {
         return CHAT_CACHE;
     }
 
+    /**
+     * Returns the singleton cache for TDLib session artifacts and tokens.
+     */
     public static Cache<String, Object> sessionCache() {
         return SESSION_CACHE;
     }
