@@ -47,7 +47,7 @@ public class DatabaseIndexManager {
 
         return sqlClient.query(sql)
                 .execute()
-                .compose(rs -> Future.succeededFuture())
+                .mapEmpty()
                 .onSuccess(v -> log.info("Index {} ensured", name))
                 .onFailure(err -> log.error("Failed to ensure index {}: {}", name, err.getMessage()));
     }
@@ -61,7 +61,7 @@ public class DatabaseIndexManager {
 
         return sqlClient.query(sql)
                 .execute()
-                .compose(rs -> Future.succeededFuture())
+                .mapEmpty()
                 .onSuccess(v -> log.info("Composite index {} ensured", name))
                 .onFailure(err -> log.error("Failed to ensure index {}: {}", name, err.getMessage()));
     }
