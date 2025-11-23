@@ -1,6 +1,5 @@
 package telegram.files.repository.optimization;
 
-import io.vertx.core.CompositeFuture;
 import io.vertx.core.Future;
 import io.vertx.sqlclient.SqlClient;
 import org.slf4j.Logger;
@@ -36,7 +35,7 @@ public class DatabaseIndexManager {
         futures.add(ensureIndex("idx_file_type", "files", "file_type"));
         futures.add(ensureCompositeIndex("idx_file_chat_status", "files", "chat_id", "status"));
 
-        return CompositeFuture.all(futures.toArray(Future[]::new))
+        return Future.all(futures)
                 .mapEmpty();
     }
 
