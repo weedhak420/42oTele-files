@@ -22,15 +22,14 @@ import java.time.Instant;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.PriorityQueue;
+import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
-import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 public class AutoDownloadVerticle extends AbstractVerticle {
@@ -42,7 +41,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
     private static final List<String> DEFAULT_FILE_TYPE_ORDER = List.of("photo", "video", "audio", "file");
 
     // telegramId -> messages
-    private final Map<Long, PriorityQueue<MessageWrapper>> waitingDownloadMessages = new ConcurrentHashMap<>();
+    private final Map<Long, Queue<MessageWrapper>> waitingDownloadMessages = new ConcurrentHashMap<>();
 
     // telegramId -> waiting scan threads
     private final Map<Long, LinkedList<WaitingScanThread>> waitingScanThreads = new ConcurrentHashMap<>();
@@ -84,8 +83,8 @@ public class AutoDownloadVerticle extends AbstractVerticle {
     public AutoDownloadVerticle() {
         this.autoRecords = AutomationsHolder.INSTANCE.autoRecords();
         AutomationsHolder.INSTANCE.registerOnRemoveListener(removedItems -> removedItems.forEach(item ->
-                waitingDownloadMessages.getOrDefault(item.telegramId, new PriorityQueue<>(MessageWrapper.PRIORITY_COMPARATOR))
-                        .removeIf(m -> m.message.chatId == item.chatId)));
+                waitingDownloadMessages.getOrDefault(item.telegramId, new ConcurrentLinkedQueue<>())
+                        .removeIf(m -> m.message().chatId == item.chatId)));
     }
 
     @Override
@@ -165,9 +164,9 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                         if (auto.isNotComplete(SettingAutoRecords.HISTORY_DOWNLOAD_SCAN_STATE)) {
                             addHistoryMessage(auto);
                         } else {
-                            PriorityQueue<MessageWrapper> messageWrappers = waitingDownloadMessages.get(auto.telegramId);
+                            Queue<MessageWrapper> messageWrappers = waitingDownloadMessages.get(auto.telegramId);
                             if (CollUtil.isEmpty(messageWrappers)
-                                || messageWrappers.stream().noneMatch(w -> w.isHistorical)) {
+                                || messageWrappers.stream().noneMatch(MessageWrapper::isHistorical)) {
                                 auto.complete(SettingAutoRecords.HISTORY_DOWNLOAD_STATE);
                                 removeCheckpoint(auto.uniqueKey());
                             }
@@ -180,8 +179,8 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         Instant now = Instant.now();
         Instant historyThreshold = now.minus(Duration.ofDays(7));
         waitingDownloadMessages.values()
-                .forEach(queue -> queue.removeIf(wrapper -> wrapper.isHistorical
-                        && Instant.ofEpochSecond(wrapper.message.date).isBefore(historyThreshold)));
+                .forEach(queue -> queue.removeIf(wrapper -> wrapper.isHistorical()
+                        && Instant.ofEpochSecond(wrapper.message().date).isBefore(historyThreshold)));
 
         Instant retryThreshold = now.minus(Duration.ofHours(1));
         retryContexts.entrySet().removeIf(entry -> Instant.ofEpochMilli(entry.getValue().getLastRetryTime()).isBefore(retryThreshold));
@@ -368,7 +367,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                             updateCheckpoint(uniqueKey, chatId, nextFileType, params.nextFromMessageId);
                             addHistoryMessage(params, callback, currentTimeMillis);
                         } else {
-                            boolean added = scanChunk(telegramId, messages, true, rule.v2);
+                            boolean added = scanChunk(telegramId, messages, true, params.rule);
                             params.nextFromMessageId = foundChatMessages.nextFromMessageId;
                             updateCheckpoint(uniqueKey, chatId, nextFileType, params.nextFromMessageId);
                             if (added) {
@@ -379,7 +378,10 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         }
     }
 
-    private boolean scanChunk(long telegramId, List<TdApi.Message> messages, boolean isHistorical, List<String> fileTypeOrder) {
+    private boolean scanChunk(long telegramId,
+                              List<TdApi.Message> messages,
+                              boolean isHistorical,
+                              SettingAutoRecords.DownloadRule rule) {
         if (CollUtil.isEmpty(messages)) {
             return false;
         }
@@ -387,7 +389,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         boolean added = false;
         for (int i = 0; i < messages.size(); i += chunkSize) {
             List<TdApi.Message> chunk = messages.subList(i, Math.min(messages.size(), i + chunkSize));
-            if (!addWaitingDownloadMessages(telegramId, chunk, false, isHistorical, fileTypeOrder)) {
+            if (!addWaitingDownloadMessages(telegramId, chunk, false, isHistorical, rule)) {
                 break;
             }
             added = true;
@@ -451,7 +453,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
     }
 
     private boolean isExceedLimit(long telegramId) {
-        List<MessageWrapper> waitingMessages = this.waitingDownloadMessages.get(telegramId);
+        Queue<MessageWrapper> waitingMessages = this.waitingDownloadMessages.get(telegramId);
         return getSurplusSize(telegramId) <= 0 || (waitingMessages != null && waitingMessages.size() > maxWaitingLength);
     }
 
@@ -513,42 +515,63 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                                                List<TdApi.Message> messages,
                                                boolean force,
                                                boolean isHistorical) {
-        return addWaitingDownloadMessages(telegramId, messages, force, isHistorical, DEFAULT_FILE_TYPE_ORDER);
+        return addWaitingDownloadMessages(telegramId, messages, force, isHistorical, null);
     }
 
     private boolean addWaitingDownloadMessages(long telegramId,
                                                List<TdApi.Message> messages,
                                                boolean force,
                                                boolean isHistorical,
-                                               List<String> fileTypeOrder) {
+                                               SettingAutoRecords.DownloadRule rule) {
         if (CollUtil.isEmpty(messages)) {
             return false;
         }
-        PriorityQueue<MessageWrapper> waitingMessages = this.waitingDownloadMessages.get(telegramId);
-        if (waitingMessages == null) {
-            waitingMessages = new PriorityQueue<>(MessageWrapper.PRIORITY_COMPARATOR);
-        }
+        Queue<MessageWrapper> waitingMessages = this.waitingDownloadMessages.computeIfAbsent(
+                telegramId,
+                k -> new ConcurrentLinkedQueue<>()
+        );
         if (!force && waitingMessages.size() > maxWaitingLength) {
             return false;
         } else {
             log.debug("Add waiting download messages: %d".formatted(messages.size()));
-            waitingMessages.addAll(TdApiHelp.filterUniqueMessages(messages)
-                    .stream()
-                    .map(message -> new MessageWrapper(message, isHistorical, fileTypeOrder))
-                    .toList()
-            );
+            TdApiHelp.filterUniqueMessages(messages).forEach(message -> {
+                int priority = calculateFilePriority(message, rule);
+                waitingMessages.add(new MessageWrapper(message, isHistorical, priority));
+            });
             publishQueueSize(telegramId, waitingMessages.size());
         }
-        this.waitingDownloadMessages.put(telegramId, waitingMessages);
         return true;
+    }
+
+    private int calculateFilePriority(TdApi.Message message, SettingAutoRecords.DownloadRule rule) {
+        String fileType = TdApiHelp.getFileType(message);
+        List<String> orderedTypes = rule != null && CollUtil.isNotEmpty(rule.fileTypes)
+                ? rule.fileTypes
+                : DEFAULT_FILE_TYPE_ORDER;
+        int basePriority = orderedTypes.indexOf(fileType);
+        if (basePriority < 0) {
+            basePriority = orderedTypes.size();
+        }
+
+        int fileSize = TdApiHelp.getFileSize(message);
+        if (fileSize < 10_000_000) {
+            basePriority -= 1;
+        }
+
+        long messageAge = System.currentTimeMillis() - (message.date * 1000L);
+        if (messageAge < 3_600_000) {
+            basePriority -= 1;
+        }
+
+        return Math.max(0, basePriority);
     }
 
     private void download(long telegramId) {
         if (CollUtil.isEmpty(waitingDownloadMessages)) {
             return;
         }
-        PriorityQueue<MessageWrapper> messages = waitingDownloadMessages.get(telegramId);
-        if (CollUtil.isEmpty(messages)) {
+        Queue<MessageWrapper> messages = waitingDownloadMessages.get(telegramId);
+        if (messages == null || messages.isEmpty()) {
             return;
         }
         TelegramVerticle telegramVerticle = TelegramVerticles.getOrElseThrow(telegramId);
@@ -558,13 +581,12 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         }
 
         List<MessageWrapper> downloadMessages = new ArrayList<>();
-        IntStream.range(0, Math.min(surplusSize, messages.size()))
-                .forEach(i -> {
-                    MessageWrapper wrapper = messages.poll();
-                    if (wrapper != null) {
-                        downloadMessages.add(wrapper);
-                    }
-                });
+        while (downloadMessages.size() < Math.min(surplusSize, messages.size()) && !messages.isEmpty()) {
+            MessageWrapper wrapper = messages.poll();
+            if (wrapper != null) {
+                downloadMessages.add(wrapper);
+            }
+        }
         log.debug("Download start! TelegramId: %d size: %d".formatted(telegramId, downloadMessages.size()));
 
         downloadMessages.forEach(messageWrapper -> startDownloadWithRetry(telegramId, telegramVerticle, messageWrapper));
@@ -573,7 +595,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
     }
 
     private void startDownloadWithRetry(long telegramId, TelegramVerticle telegramVerticle, MessageWrapper messageWrapper) {
-        TdApi.Message message = messageWrapper.message;
+        TdApi.Message message = messageWrapper.message();
         String uniqueId = TdApiHelp.getFileUniqueId(message);
         if (StrUtil.isBlank(uniqueId)) {
             log.warn("Skip download due to missing unique id. ChatId: %d MessageId:%d".formatted(message.chatId, message.id));
@@ -587,7 +609,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                 .put("type", "downloadStart")
                 .put("uniqueId", uniqueId)
                 .put("telegramId", telegramId)
-                .put("queued", waitingDownloadMessages.getOrDefault(telegramId, new PriorityQueue<>(MessageWrapper.PRIORITY_COMPARATOR)).size()));
+                .put("queued", waitingDownloadMessages.getOrDefault(telegramId, new ConcurrentLinkedQueue<>()).size()));
         RetryContext context = retryContexts.computeIfAbsent(uniqueId, key -> new RetryContext());
         attemptDownload(telegramId, telegramVerticle, messageWrapper, uniqueId, context);
     }
@@ -597,7 +619,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                                  MessageWrapper messageWrapper,
                                  String uniqueId,
                                  RetryContext context) {
-        TdApi.Message message = messageWrapper.message;
+        TdApi.Message message = messageWrapper.message();
         Integer fileId = TdApiHelp.getFileId(message);
         log.debug("Start download file: %s".formatted(fileId));
         telegramVerticle.startDownload(message.chatId, message.id, fileId)
@@ -622,7 +644,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                                        RetryContext context,
                                        Throwable e) {
         log.error("Download file failed! ChatId: %d MessageId:%d UniqueId:%s"
-                .formatted(messageWrapper.message.chatId, messageWrapper.message.id, uniqueId), e);
+                .formatted(messageWrapper.message().chatId, messageWrapper.message().id, uniqueId), e);
         activeDownloads.remove(uniqueId);
         context.recordFailure(e);
         if (context.getRetryCount() > retryAttempts) {
@@ -637,10 +659,10 @@ public class AutoDownloadVerticle extends AbstractVerticle {
 
         long delay = retryDelayMs * (long) Math.pow(2, context.getRetryCount());
         vertx.setTimer(delay, id -> {
-            waitingDownloadMessages.computeIfAbsent(telegramId, key -> new PriorityQueue<>(MessageWrapper.PRIORITY_COMPARATOR))
+            waitingDownloadMessages.computeIfAbsent(telegramId, key -> new ConcurrentLinkedQueue<>())
                     .offer(messageWrapper);
             publishQueueSize(telegramId, waitingDownloadMessages
-                    .getOrDefault(telegramId, new PriorityQueue<>(MessageWrapper.PRIORITY_COMPARATOR))
+                    .getOrDefault(telegramId, new ConcurrentLinkedQueue<>())
                     .size());
         });
     }
@@ -738,65 +760,16 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         }
     }
 
-    private static class MessageWrapper {
+    private record MessageWrapper(TdApi.Message message, boolean isHistorical, int priority)
+            implements Comparable<MessageWrapper> {
 
-        public static final Comparator<MessageWrapper> PRIORITY_COMPARATOR = Comparator
-                .comparingInt(MessageWrapper::getFileTypeRank)
-                .thenComparingLong(MessageWrapper::getFileSize)
-                .thenComparing((MessageWrapper o1, MessageWrapper o2) -> Long.compare(o2.messageDate, o1.messageDate));
-
-        private final TdApi.Message message;
-
-        private final boolean isHistorical;
-
-        private final int fileTypeRank;
-
-        private final long fileSize;
-
-        private final long messageDate;
-
-        public MessageWrapper(TdApi.Message message, boolean isHistorical, List<String> fileTypeOrder) {
-            this.message = message;
-            this.isHistorical = isHistorical;
-            this.fileTypeRank = calculateFileTypeRank(message, fileTypeOrder);
-            this.fileSize = calculateFileSize(message);
-            this.messageDate = Convert.toLong(message.date);
-        }
-
-        private int calculateFileTypeRank(TdApi.Message message, List<String> fileTypeOrder) {
-            String fileType = getFileType(message);
-            int index = fileTypeOrder.indexOf(fileType);
-            return index >= 0 ? index : Integer.MAX_VALUE;
-        }
-
-        private String getFileType(TdApi.Message message) {
-            return switch (message.content.getConstructor()) {
-                case TdApi.MessagePhoto.CONSTRUCTOR -> "photo";
-                case TdApi.MessageVideo.CONSTRUCTOR -> "video";
-                case TdApi.MessageAudio.CONSTRUCTOR -> "audio";
-                case TdApi.MessageDocument.CONSTRUCTOR -> "file";
-                default -> "unknown";
-            };
-        }
-
-        private long calculateFileSize(TdApi.Message message) {
-            return TdApiHelp.getFileHandler(message)
-                    .map(handler -> {
-                        TdApi.File file = handler.getFile();
-                        if (file == null) {
-                            return Long.MAX_VALUE;
-                        }
-                        return file.size == 0 ? file.expectedSize : file.size;
-                    })
-                    .orElse(Long.MAX_VALUE);
-        }
-
-        private int getFileTypeRank() {
-            return fileTypeRank;
-        }
-
-        private long getFileSize() {
-            return fileSize;
+        @Override
+        public int compareTo(MessageWrapper other) {
+            int priorityCompare = Integer.compare(this.priority, other.priority);
+            if (priorityCompare != 0) {
+                return priorityCompare;
+            }
+            return Long.compare(other.message.date, this.message.date);
         }
     }
 }
