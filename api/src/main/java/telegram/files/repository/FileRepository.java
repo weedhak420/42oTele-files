@@ -51,6 +51,8 @@ public interface FileRepository {
 
     Future<Integer> updateAlbumDataByMediaAlbumId(long mediaAlbumId, String caption, long reactionCount);
 
+    Future<List<FileRecord>> getIdleFilesByChatId(long chatId);
+
     Future<Void> updateTags(String uniqueId, String tags);
 
     Future<Void> deleteByUniqueId(String uniqueId);

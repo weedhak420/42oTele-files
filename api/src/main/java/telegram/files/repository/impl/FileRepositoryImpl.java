@@ -705,6 +705,22 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
     }
 
     @Override
+    public Future<List<FileRecord>> getIdleFilesByChatId(long chatId) {
+        return SqlTemplate
+                .forQuery(sqlClient, """
+                        SELECT *
+                        FROM file_record
+                        WHERE chat_id = #{chatId}
+                          AND download_status = 'idle'
+                          AND type != 'thumbnail'
+                        """)
+                .mapTo(FileRecord.ROW_MAPPER)
+                .execute(Map.of("chatId", chatId))
+                .onFailure(err -> log.error("Failed to get idle files by chat: %s".formatted(err.getMessage())))
+                .map(IterUtil::toList);
+    }
+
+    @Override
     public Future<Void> updateTags(String uniqueId, String tags) {
         if (StrUtil.isBlank(uniqueId)) {
             return Future.succeededFuture();
