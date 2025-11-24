@@ -661,14 +661,16 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
                 """;
         Map<String, Object> params = Map.of("batchSize", records.size());
         List<Map<String, Object>> mapped = records.stream()
-                .map(r -> MapUtil.ofEntries(
-                        MapUtil.entry("download_status", r.downloadStatus()),
-                        MapUtil.entry("local_path", r.localPath()),
-                        MapUtil.entry("completion_date", r.completionDate()),
-                        MapUtil.entry("transfer_status", r.transferStatus()),
-                        MapUtil.entry("unique_id", r.uniqueId())
-                ))
-                .toList();
+                .map(r -> {
+                    Map<String, Object> result = new HashMap<>();
+                    result.put("download_status", r.downloadStatus());
+                    result.put("local_path", r.localPath());
+                    result.put("completion_date", r.completionDate());
+                    result.put("transfer_status", r.transferStatus());
+                    result.put("unique_id", r.uniqueId());
+                    return result;
+                })
+                .collect(Collectors.toList());
         return timed(sql, params,
                 SqlTemplate.forUpdate(sqlClient, sql)
                         .executeBatch(mapped)
