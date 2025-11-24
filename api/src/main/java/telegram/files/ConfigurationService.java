@@ -218,12 +218,14 @@ public class ConfigurationService {
         }
         String fullKey = definition.fullKey();
         Object oldValue = cache.get(fullKey);
-        return settingRepository.createOrUpdate(fullKey, Convert.toStr(value))
+        final Object finalValue = value;
+        final Object finalOldValue = oldValue;
+        return settingRepository.createOrUpdate(fullKey, Convert.toStr(finalValue))
                 .compose(r -> historyRepository.append(new ConfigurationHistoryRecord(null, category, key, user,
-                        oldValue == null ? null : Convert.toStr(oldValue), Convert.toStr(value), System.currentTimeMillis())))
+                        finalOldValue == null ? null : Convert.toStr(finalOldValue), Convert.toStr(finalValue), System.currentTimeMillis())))
                 .onSuccess(v -> {
-                    cache.put(fullKey, value);
-                    publishChange(definition, value, oldValue);
+                    cache.put(fullKey, finalValue);
+                    publishChange(definition, finalValue, finalOldValue);
                 })
                 .map(describe(definition));
     }
