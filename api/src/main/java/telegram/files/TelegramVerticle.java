@@ -152,12 +152,17 @@ public class TelegramVerticle extends AbstractVerticle {
         return promise.future().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
     }
 
-    private Future<Boolean> deleteFileAsync(String path) {
+    private Future<Void> deleteFileAsync(String path) {
         if (StrUtil.isBlank(path)) {
-            return Future.succeededFuture(false);
+            return Future.succeededFuture();
         }
         return vertx.fileSystem().exists(path)
-                .compose(exists -> exists ? vertx.fileSystem().delete(path).map(true) : Future.succeededFuture(false));
+                .compose(exists -> {
+                    if (exists) {
+                        return vertx.fileSystem().deleteRecursive(path);
+                    }
+                    return Future.succeededFuture();
+                });
     }
 
     private Future<Boolean> existsAsync(String path) {
@@ -1096,7 +1101,7 @@ public class TelegramVerticle extends AbstractVerticle {
                 break;
             case TdApi.AuthorizationStateClosed.CONSTRUCTOR:
                 if (needDelete) {
-                    vertx.fileSystem().deleteRecursive(this.rootPath, true)
+                    vertx.fileSystem().deleteRecursive(this.rootPath)
                             .onSuccess(v -> log.info("[%s] Telegram account deleted".formatted(this.getRootId())))
                             .onFailure(e -> log.error("[%s] Failed to delete telegram account data: %s".formatted(this.getRootId(), e.getMessage())));
                 }
