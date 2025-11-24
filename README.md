@@ -23,6 +23,7 @@
 - [⌨️ Development](#️-development)
     - [☑️ Prerequisites](#-prerequisites)
     - [⚙️ Installation](#-installation)
+- [📐 Architecture & Performance Guides](#-architecture--performance-guides)
 - [📌 Project Roadmap](#-project-roadmap)
 - [🔰 Contributing](#-contributing)
 - [🎗 License](#-license)
@@ -149,6 +150,22 @@ gradle build
 
 ```sh
 docker build -t jarvis2f/telegram-files .
+```
+
+## 📐 Architecture & Performance Guides
+
+- [Architecture Overview](docs/ARCHITECTURE.md) — outlines the target modular design for verticles, route handlers, repositories, and services.
+- [Performance and Reliability Guidelines](docs/PERFORMANCE.md) — captures database, download, and automation optimizations to apply during the refactor.
+- [Migration Guide](docs/MIGRATION.md) — documents notable behavioural changes, caching defaults, and new testing entry points.
+
+```mermaid
+flowchart LR
+    HttpVerticle -->|routes| FileRouteHandler & TelegramRouteHandler & SettingRouteHandler & StatisticRouteHandler & HealthCheckHandler
+    HttpVerticle -->|services| FileService & TelegramService & AutomationService & DownloadService
+    TelegramVerticle -->|orchestrates| TelegramAuthService & TelegramMessageHandler & TelegramFileManager & TelegramChatService & TelegramEventDispatcher
+    AutoDownloadVerticle -->|delegates| DownloadStateManager & DownloadScheduler & AutomationRuleEngine & DownloadEngine
+    FileService --> FileRepositoryFacade
+    FileRepositoryFacade --> FileQueryRepository & FileCommandRepository & FileStatisticsRepository & FileSearchRepository
 ```
 
 ## 📌 Project Roadmap

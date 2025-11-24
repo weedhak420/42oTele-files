@@ -26,6 +26,13 @@ public class SettingAutoRecords {
 
         public long chatId;
 
+        /**
+         * Lower values represent higher priority when multiple automation rules match the same
+         * message or chat. Defaults to {@code 0} to preserve previous behaviour when the field
+         * was absent.
+         */
+        public int priority;
+
         public PreloadConfig preload;
 
         public DownloadConfig download;
