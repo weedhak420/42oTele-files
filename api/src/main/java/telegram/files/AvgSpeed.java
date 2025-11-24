@@ -1,5 +1,7 @@
 package telegram.files;
 
+import io.vertx.core.json.JsonObject;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -221,5 +223,13 @@ public class AvgSpeed {
     }
 
     public record SpeedStats(int interval, long avgSpeed, long medianSpeed, long maxSpeed, long minSpeed) {
+        public JsonObject toJson() {
+            return new JsonObject()
+                    .put("interval", interval)
+                    .put("avgSpeed", avgSpeed)
+                    .put("medianSpeed", medianSpeed)
+                    .put("maxSpeed", maxSpeed)
+                    .put("minSpeed", minSpeed);
+        }
     }
 }

@@ -26,6 +26,16 @@ public class MigrationManager {
                             "DROP INDEX IF EXISTS idx_file_record_tg_status_chat;",
                             "DROP INDEX IF EXISTS idx_file_record_unique_status;"
                     }
+            ),
+            new MigrationScript(
+                    "0.2.6-auto-download-index",
+                    "Add composite index for auto download queries",
+                    new String[]{
+                            "CREATE INDEX IF NOT EXISTS idx_file_record_auto_download ON file_record(chat_id, download_status, type, message_id DESC);"
+                    },
+                    new String[]{
+                            "DROP INDEX IF EXISTS idx_file_record_auto_download;"
+                    }
             )
     );
 

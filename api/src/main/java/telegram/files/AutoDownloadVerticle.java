@@ -370,6 +370,8 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                 callback.accept(new ScanResult(nextFileType, nextFromMessageId, true));
             }
         } else {
+            log.info("Found %d historical messages to process for chat %d".formatted(
+                    foundChatMessages.messages.length, chatId));
             DataVerticle.fileRepository.getFilesByUniqueId(TdApiHelp.getFileUniqueIds(Arrays.asList(foundChatMessages.messages)))
                     .onSuccess(existFiles -> {
                         List<TdApi.Message> messages = Stream.of(foundChatMessages.messages)
@@ -560,6 +562,8 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                 waitingMessages.add(new MessageWrapper(message, isHistorical, priority));
             });
             publishQueueSize(telegramId, waitingMessages.size());
+            log.info("Added %d messages to download queue for telegram %d (total queue: %d)".formatted(
+                    messages.size(), telegramId, waitingMessages.size()));
         }
         return true;
     }
@@ -589,15 +593,20 @@ public class AutoDownloadVerticle extends AbstractVerticle {
 
     private void download(long telegramId) {
         if (CollUtil.isEmpty(waitingDownloadMessages)) {
+            log.debug("No waiting download messages map available");
             return;
         }
         Queue<MessageWrapper> messages = waitingDownloadMessages.get(telegramId);
         if (messages == null || messages.isEmpty()) {
+            log.debug("No waiting download messages for telegramId: %d".formatted(telegramId));
             return;
         }
         TelegramVerticle telegramVerticle = TelegramVerticles.getOrElseThrow(telegramId);
         int surplusSize = getSurplusSize(telegramId);
+        log.info("Download queue size for telegram %d: %d messages".formatted(telegramId, messages.size()));
+        log.info("Available download slots for telegram %d: %d".formatted(telegramId, surplusSize));
         if (surplusSize <= 0) {
+            log.info("No available download slots for telegram %d (limit reached)".formatted(telegramId));
             return;
         }
 

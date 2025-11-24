@@ -671,7 +671,7 @@ public class TelegramVerticle extends AbstractVerticle {
                     .put("receivedBytes", bytes.v2)
             );
 
-            jsonObject.put("speedStats", avgSpeed.getSpeedStats());
+            jsonObject.put("speedStats", avgSpeed.getSpeedStats().toJson());
             return jsonObject;
         });
     }
@@ -874,7 +874,7 @@ public class TelegramVerticle extends AbstractVerticle {
             && speedStats.maxSpeed() == 0) {
             return;
         }
-        JsonObject data = JsonObject.mapFrom(speedStats);
+        JsonObject data = speedStats.toJson();
         data.remove("interval");
         DataVerticle.statisticRepository.create(new StatisticRecord(Convert.toStr(telegramRecord.id()),
                 StatisticRecord.Type.speed,
