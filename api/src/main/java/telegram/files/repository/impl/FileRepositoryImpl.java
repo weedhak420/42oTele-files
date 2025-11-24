@@ -52,7 +52,7 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
         }
         log.warn("Slow query (%d ms): %s params: %s".formatted(elapsedMs, sql, params));
         if (Config.isSqlite()) {
-            sqlClient.query("EXPLAIN QUERY PLAN " + sql.replaceAll("#\\{[^}]+}\\", "?"))
+            sqlClient.query("EXPLAIN QUERY PLAN " + sql)
                     .execute()
                     .onSuccess(plan -> log.debug("SQLite plan: %s".formatted(plan.iterator().next().toJson())));
         }
