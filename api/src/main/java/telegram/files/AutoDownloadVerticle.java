@@ -347,6 +347,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         searchChatMessages.limit = Math.min(maxWaitingLength, Math.min(100, calculateOptimalChunkSize(telegramVerticle)));
         searchChatMessages.filter = TdApiHelp.getSearchMessagesFilter(nextFileType);
         searchChatMessages.messageThreadId = params.messageThreadId;
+        final String fileTypeForCheckpoint = nextFileType;
         TdApi.FoundChatMessages foundChatMessages = Future.await(telegramVerticle.client.execute(searchChatMessages)
                 .onFailure(r -> log.error("Search chat messages failed! TelegramId: %d ChatId: %d".formatted(telegramId, chatId), r))
         );
@@ -384,12 +385,12 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                                 .toList();
                         if (CollUtil.isEmpty(messages)) {
                             params.nextFromMessageId = foundChatMessages.nextFromMessageId;
-                            updateCheckpoint(uniqueKey, chatId, nextFileType, params.nextFromMessageId);
+                            updateCheckpoint(uniqueKey, chatId, fileTypeForCheckpoint, params.nextFromMessageId);
                             addHistoryMessage(params, callback, currentTimeMillis);
                         } else {
                             boolean added = scanChunk(telegramId, messages, true, params.rule);
                             params.nextFromMessageId = foundChatMessages.nextFromMessageId;
-                            updateCheckpoint(uniqueKey, chatId, nextFileType, params.nextFromMessageId);
+                            updateCheckpoint(uniqueKey, chatId, fileTypeForCheckpoint, params.nextFromMessageId);
                             if (added) {
                                 addHistoryMessage(params, callback, currentTimeMillis);
                             }
