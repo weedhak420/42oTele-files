@@ -866,7 +866,7 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
         return timed(sql, Map.of(),
                 sqlClient.query(sql)
                         .execute()
-                        .map(rs -> rs.stream().map(FileRecord.ROW_MAPPER).toList()));
+                        .map(rs -> rs.stream().map(FileRecord.ROW_MAPPER::map).toList()));
     }
 
     @Override
