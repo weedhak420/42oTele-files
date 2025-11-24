@@ -5,11 +5,15 @@ import cn.hutool.log.LogFactory;
 import org.drinkless.tdlib.Client;
 import org.drinkless.tdlib.TdApi;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 public class TelegramUpdateHandler implements Client.ResultHandler {
 
     private static final Log log = LogFactory.get();
+
+    private static final long EVENT_THROTTLE_MS = 1000L;
 
     private Consumer<TdApi.AuthorizationState> onAuthorizationStateUpdated;
 
@@ -21,6 +25,8 @@ public class TelegramUpdateHandler implements Client.ResultHandler {
 
     private Consumer<TdApi.Message> onMessageReceived;
 
+    private final Map<Integer, Long> lastEventTime = new ConcurrentHashMap<>();
+
     @Override
     public void onResult(TdApi.Object object) {
         switch (object.getConstructor()) {
@@ -29,8 +35,8 @@ public class TelegramUpdateHandler implements Client.ResultHandler {
                     onAuthorizationStateUpdated.accept(((TdApi.UpdateAuthorizationState) object).authorizationState);
                 break;
             case TdApi.UpdateFile.CONSTRUCTOR:
-                if (onFileUpdated != null)
-                    onFileUpdated.accept((TdApi.UpdateFile) object);
+                handleFileUpdated((TdApi.UpdateFile) object);
+                break;
             case TdApi.UpdateFileDownload.CONSTRUCTOR:
                 log.trace("File download update: %s".formatted(object));
                 break;
@@ -53,6 +59,29 @@ public class TelegramUpdateHandler implements Client.ResultHandler {
                 }
             default:
                 log.trace("Unsupported telegram update: %s".formatted(object));
+        }
+    }
+
+    private void handleFileUpdated(TdApi.UpdateFile update) {
+        TdApi.File file = update.file;
+        if (file != null && file.local != null && (file.local.isDownloadingActive || file.local.isDownloadingCompleted)) {
+            long now = System.currentTimeMillis();
+            Long lastTime = lastEventTime.get(file.id);
+            boolean isComplete = file.local.isDownloadingCompleted;
+            boolean shouldSend = lastTime == null || (now - lastTime) > EVENT_THROTTLE_MS || isComplete;
+
+            if (!shouldSend) {
+                return;
+            }
+
+            lastEventTime.put(file.id, now);
+            if (isComplete) {
+                lastEventTime.remove(file.id);
+            }
+        }
+
+        if (onFileUpdated != null) {
+            onFileUpdated.accept(update);
         }
     }
 
