@@ -239,7 +239,14 @@ public class TelegramVerticle extends AbstractVerticle {
 
     public TdApi.Chat getChat(long chatId) {
         try {
-            return chatCache.get(chatId);
+            TdApi.Chat cached = chatCache.getIfPresent(chatId);
+            if (cached != null) {
+                publishMetricUpdate(new JsonObject().put("type", "cacheAccess").put("hit", true));
+                return cached;
+            }
+            TdApi.Chat chat = chatCache.get(chatId);
+            publishMetricUpdate(new JsonObject().put("type", "cacheAccess").put("hit", false));
+            return chat;
         } catch (ExecutionException e) {
             logErrorContext("getChat", chatId, null, null, e);
             return telegramChats.getChat(chatId);
@@ -722,6 +729,9 @@ public class TelegramVerticle extends AbstractVerticle {
     public Future<Double> ping() {
         return this.getTdProxy()
                 .compose(proxy -> executeWithContext(new TdApi.PingProxy(proxy == null ? 0 : proxy.id), "pingProxy", null, null, null))
+                .onSuccess(result -> publishMetricUpdate(new JsonObject()
+                        .put("type", "networkLatency")
+                        .put("latency", Math.round(result.seconds * 1000))))
                 .map(r -> r.seconds);
     }
 
@@ -745,6 +755,13 @@ public class TelegramVerticle extends AbstractVerticle {
     private void sendEvent(EventPayload payload) {
         vertx.eventBus().publish(EventEnum.TELEGRAM_EVENT.address(),
                 JsonObject.of("telegramId", this.getId(), "payload", JsonObject.mapFrom(payload)));
+    }
+
+    private void publishMetricUpdate(JsonObject payload) {
+        if (payload == null) {
+            return;
+        }
+        vertx.eventBus().publish(PerformanceMonitorVerticle.METRICS_UPDATE_ADDRESS, payload);
     }
 
     private void sendFileStatusHttpEvent(TdApi.File file, JsonObject fileUpdated) {
@@ -857,12 +874,22 @@ public class TelegramVerticle extends AbstractVerticle {
         execution.onSuccess(result -> {
                     lastActivityTime = System.currentTimeMillis();
                     recordApiMetrics(operation, System.currentTimeMillis() - start, true);
+                    publishMetricUpdate(new JsonObject()
+                            .put("type", "apiCall")
+                            .put("operation", operation)
+                            .put("durationMs", System.currentTimeMillis() - start)
+                            .put("success", true));
                     promise.complete(result);
                 })
                 .onFailure(err -> {
                     lastActivityTime = System.currentTimeMillis();
                     logErrorContext(operation, chatId, messageId, fileId, err);
                     recordApiMetrics(operation, System.currentTimeMillis() - start, false);
+                    publishMetricUpdate(new JsonObject()
+                            .put("type", "apiCall")
+                            .put("operation", operation)
+                            .put("durationMs", System.currentTimeMillis() - start)
+                            .put("success", false));
                     if (isTransientError(err) && retryCount < 3) {
                         long delay = (long) Math.pow(2, retryCount) * 500L;
                         vertx.setTimer(delay, id -> executeWithContext(request, operation, chatId, messageId, fileId, ignoreException, retryCount + 1)

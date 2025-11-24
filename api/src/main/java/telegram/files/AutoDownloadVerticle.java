@@ -536,6 +536,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                     .map(message -> new MessageWrapper(message, isHistorical, fileTypeOrder))
                     .toList()
             );
+            publishQueueSize(telegramId, waitingMessages.size());
         }
         this.waitingDownloadMessages.put(telegramId, waitingMessages);
         return true;
@@ -567,6 +568,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
 
         downloadMessages.forEach(messageWrapper -> startDownloadWithRetry(telegramId, telegramVerticle, messageWrapper));
         log.debug("Remaining download messages: %d".formatted(messages.size()));
+        publishQueueSize(telegramId, messages == null ? 0 : messages.size());
     }
 
     private void startDownloadWithRetry(long telegramId, TelegramVerticle telegramVerticle, MessageWrapper messageWrapper) {
@@ -580,6 +582,11 @@ public class AutoDownloadVerticle extends AbstractVerticle {
             log.debug("Duplicate download detected, skip: %s".formatted(uniqueId));
             return;
         }
+        publishMetricUpdate(new JsonObject()
+                .put("type", "downloadStart")
+                .put("uniqueId", uniqueId)
+                .put("telegramId", telegramId)
+                .put("queued", waitingDownloadMessages.getOrDefault(telegramId, new PriorityQueue<>(MessageWrapper.PRIORITY_COMPARATOR)).size()));
         RetryContext context = retryContexts.computeIfAbsent(uniqueId, key -> new RetryContext());
         attemptDownload(telegramId, telegramVerticle, messageWrapper, uniqueId, context);
     }
@@ -622,10 +629,18 @@ public class AutoDownloadVerticle extends AbstractVerticle {
             return;
         }
 
+        publishMetricUpdate(new JsonObject()
+                .put("type", "downloadFailure")
+                .put("uniqueId", uniqueId)
+                .put("retryCount", context.getRetryCount()));
+
         long delay = RETRY_DELAY * (long) Math.pow(2, context.getRetryCount());
         vertx.setTimer(delay, id -> {
             waitingDownloadMessages.computeIfAbsent(telegramId, key -> new PriorityQueue<>(MessageWrapper.PRIORITY_COMPARATOR))
                     .offer(messageWrapper);
+            publishQueueSize(telegramId, waitingDownloadMessages
+                    .getOrDefault(telegramId, new PriorityQueue<>(MessageWrapper.PRIORITY_COMPARATOR))
+                    .size());
         });
     }
 
@@ -644,6 +659,18 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                                 .onFailure(e -> log.error("Auto download fail. Get message failed: %s".formatted(e.getMessage())));
                     }
                 });
+    }
+
+    private void publishQueueSize(long telegramId, int queueSize) {
+        publishMetricUpdate(new JsonObject()
+                .put("type", "queueState")
+                .put("telegramId", telegramId)
+                .put("queued", queueSize)
+                .put("active", activeDownloads.size()));
+    }
+
+    private void publishMetricUpdate(JsonObject payload) {
+        vertx.eventBus().publish(PerformanceMonitorVerticle.METRICS_UPDATE_ADDRESS, payload);
     }
 
     private static class ScanParams {

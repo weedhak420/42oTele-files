@@ -11,4 +11,6 @@ public interface StatisticRepository {
                                                      long relatedId,
                                                      long startTime,
                                                      long endTime);
+
+    Future<Void> deleteOlderThan(StatisticRecord.Type type, long cutoffTimestamp);
 }

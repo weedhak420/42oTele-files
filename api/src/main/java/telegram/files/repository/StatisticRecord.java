@@ -17,6 +17,10 @@ public record StatisticRecord(
         responseTime,
         downloadOutcome,
 
+        performance,
+
+        systemAlert,
+
         ;
     }
 

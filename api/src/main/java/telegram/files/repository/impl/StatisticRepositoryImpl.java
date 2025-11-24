@@ -64,4 +64,21 @@ public class StatisticRepositoryImpl extends AbstractSqlRepository implements St
                         err -> log.error("Failed to get range statistics: %s".formatted(err.getMessage()))
                 );
     }
+
+    @Override
+    public Future<Void> deleteOlderThan(StatisticRecord.Type type, long cutoffTimestamp) {
+        return SqlTemplate
+                .forUpdate(sqlClient, """
+                        DELETE
+                        FROM statistic_record
+                        WHERE type = #{type}
+                          AND timestamp < #{cutoff}
+                        """)
+                .execute(Map.of(
+                        "type", type.name(),
+                        "cutoff", cutoffTimestamp
+                ))
+                .onFailure(err -> log.error("Failed to cleanup statistic records: %s".formatted(err.getMessage())))
+                .mapEmpty();
+    }
 }

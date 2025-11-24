@@ -63,6 +63,7 @@ public class HttpVerticle extends AbstractVerticle {
                 .compose(r -> initAutoDownloadVerticle())
                 .compose(r -> initTransferVerticle())
                 .compose(r -> initPreloadMessageVerticle())
+                .compose(r -> initPerformanceMonitorVerticle())
                 .compose(r -> initEventConsumer())
                 .onSuccess(startPromise::complete)
                 .onFailure(startPromise::fail);
@@ -157,6 +158,13 @@ public class HttpVerticle extends AbstractVerticle {
         router.get("/telegram/:telegramId/ping").handler(this::handleTelegramPing);
         router.get("/telegram/:telegramId/test-network").handler(this::handleTelegramTestNetwork);
 
+        router.get("/api/metrics/performance").handler(this::handlePerformanceMetrics);
+        router.get("/api/metrics/history").handler(this::handlePerformanceHistory);
+        router.get("/api/metrics/health").handler(this::handlePerformanceHealth);
+        router.get("/api/metrics/resources").handler(this::handleResourceMetrics);
+        router.get("/api/metrics/recommendations").handler(this::handleRecommendations);
+        router.get("/api/alerts").handler(this::handleAlerts);
+
         router.get("/:telegramId/file/:uniqueId").handler(this::handleFilePreview);
         router.post("/:telegramId/file/start-download").handler(this::handleFileStartDownload);
         router.post("/:telegramId/file/cancel-download").handler(this::handleFileCancelDownload);
@@ -211,6 +219,11 @@ public class HttpVerticle extends AbstractVerticle {
 
     public Future<Void> initPreloadMessageVerticle() {
         return vertx.deployVerticle(new PreloadMessageVerticle(), Config.VIRTUAL_THREAD_DEPLOYMENT_OPTIONS)
+                .mapEmpty();
+    }
+
+    public Future<Void> initPerformanceMonitorVerticle() {
+        return vertx.deployVerticle(new PerformanceMonitorVerticle(), Config.VIRTUAL_THREAD_DEPLOYMENT_OPTIONS)
                 .mapEmpty();
     }
 
@@ -771,6 +784,36 @@ public class HttpVerticle extends AbstractVerticle {
         String tags = params.getString("tags");
         DataVerticle.fileRepository.updateTags(uniqueId, tags)
                 .onSuccess(r -> ctx.end())
+                .onFailure(ctx::fail);
+    }
+
+    private void handlePerformanceMetrics(RoutingContext ctx) {
+        requestMetrics(PerformanceMonitorVerticle.METRICS_QUERY_ADDRESS, ctx);
+    }
+
+    private void handlePerformanceHistory(RoutingContext ctx) {
+        requestMetrics(PerformanceMonitorVerticle.METRICS_HISTORY_ADDRESS, ctx);
+    }
+
+    private void handlePerformanceHealth(RoutingContext ctx) {
+        requestMetrics(PerformanceMonitorVerticle.METRICS_HEALTH_ADDRESS, ctx);
+    }
+
+    private void handleResourceMetrics(RoutingContext ctx) {
+        requestMetrics(PerformanceMonitorVerticle.METRICS_RESOURCES_ADDRESS, ctx);
+    }
+
+    private void handleRecommendations(RoutingContext ctx) {
+        requestMetrics(PerformanceMonitorVerticle.METRICS_RECOMMENDATIONS_ADDRESS, ctx);
+    }
+
+    private void handleAlerts(RoutingContext ctx) {
+        requestMetrics(PerformanceMonitorVerticle.ALERTS_QUERY_ADDRESS, ctx);
+    }
+
+    private void requestMetrics(String address, RoutingContext ctx) {
+        vertx.eventBus().<JsonObject>request(address, new JsonObject())
+                .onSuccess(r -> ctx.json(r.body()))
                 .onFailure(ctx::fail);
     }
 
