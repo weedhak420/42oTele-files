@@ -167,11 +167,11 @@ public class TdApiHelp {
         };
     }
 
-    public static int getFileSize(TdApi.Message message) {
+    public static Long getFileSize(TdApi.Message message) {
         return getFileHandler(message)
                 .map(FileHandler::getFile)
-                .map(file -> file == null ? 0 : file.size)
-                .orElse(0);
+                .map(file -> file == null ? 0L : file.size)
+                .orElse(0L);
     }
 
     public static Integer getFileId(TdApi.Message message) {

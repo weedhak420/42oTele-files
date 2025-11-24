@@ -197,13 +197,31 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         this.retryAttempts = configurationService.getValue("autoDownload", "retryAttempts", Integer.class);
         this.retryDelayMs = configurationService.getValue("autoDownload", "retryDelayMs", Long.class);
         adaptiveThrottler.reset(limit);
-        return DataVerticle.settingRepository.<SettingTimeLimitedDownload>getByKey(SettingKey.autoDownloadTimeLimited)
-                .onSuccess(value -> this.timeLimited = value)
+        return DataVerticle.settingRepository.<ConfigurationService.AutoDownloadConfig>getByKey(SettingKey.autoDownload)
+                .compose(this::applyAutoDownloadConfig)
+                .compose(v -> DataVerticle.settingRepository.<SettingTimeLimitedDownload>getByKey(SettingKey.autoDownloadTimeLimited)
+                        .onSuccess(value -> this.timeLimited = value)
+                        .mapEmpty())
                 .compose(v -> ScanCheckpoint.load(DataVerticle.settingRepository)
                         .onSuccess(scanCheckpoints::putAll)
                         .mapEmpty())
                 .mapEmpty()
                 .onFailure(e -> log.error("Get Auto download settings failed!", e));
+    }
+
+    private Future<Void> applyAutoDownloadConfig(ConfigurationService.AutoDownloadConfig config) {
+        if (config != null) {
+            this.historyScanInterval = Convert.toInt(config.historyScanInterval(), historyScanInterval);
+            this.downloadInterval = Convert.toInt(config.downloadInterval(), downloadInterval);
+            this.maxWaitingLength = Convert.toInt(config.maxWaitingLength(), maxWaitingLength);
+            this.limit = Convert.toInt(config.maxConcurrentDownloads(), limit);
+            this.defaultLimit = this.limit;
+            this.adaptiveThrottlingEnabled = Convert.toBool(config.enableAdaptiveThrottling(), adaptiveThrottlingEnabled);
+            this.retryAttempts = Convert.toInt(config.retryAttempts(), retryAttempts);
+            this.retryDelayMs = Convert.toLong(config.retryDelayMs(), retryDelayMs);
+            adaptiveThrottler.reset(limit);
+        }
+        return Future.succeededFuture();
     }
 
     private Future<Void> initEventConsumer() {
@@ -553,7 +571,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
             basePriority = orderedTypes.size();
         }
 
-        int fileSize = TdApiHelp.getFileSize(message);
+        long fileSize = TdApiHelp.getFileSize(message);
         if (fileSize < 10_000_000) {
             basePriority -= 1;
         }
