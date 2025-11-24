@@ -70,7 +70,7 @@ public class ConfigurationService {
                         Object value = record == null ? def.defaultValue : convertValue(def, record.value());
                         cache.put(def.fullKey(), Optional.ofNullable(value).orElse(def.defaultValue));
                     });
-                    return Future.succeededFuture();
+                    return Future.<Void>succeededFuture();
                 })
                 .mapEmpty()
                 .onFailure(err -> log.error("Failed to initialize configuration service: {}", err.getMessage()));
