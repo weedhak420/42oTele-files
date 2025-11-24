@@ -268,7 +268,7 @@ public class DataVerticle extends AbstractVerticle {
     public static DatabaseMetrics getDatabaseMetrics() {
         long sizeBytes = databaseMaintenanceService == null ? 0L : databaseMaintenanceService.getDatabaseSize();
         long lastVacuum = databaseMaintenanceService == null ? 0L : databaseMaintenanceService.getLastVacuum();
-        return DatabaseMetrics.from(hikariDataSource, pool, sizeBytes, lastVacuum);
+        return DatabaseMetrics.from(hikariDataSource, Config.DB_POOL_SIZE, sizeBytes, lastVacuum);
     }
 
     public static SqlConnectOptions createDefaultOptions() {
