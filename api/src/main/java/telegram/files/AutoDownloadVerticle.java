@@ -203,6 +203,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                 .compose(v -> ScanCheckpoint.load(DataVerticle.settingRepository)
                         .onSuccess(scanCheckpoints::putAll)
                         .mapEmpty())
+                .mapEmpty()
                 .onFailure(e -> log.error("Get Auto download settings failed!", e));
     }
 

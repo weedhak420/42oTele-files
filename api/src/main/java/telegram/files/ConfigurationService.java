@@ -72,6 +72,7 @@ public class ConfigurationService {
                     });
                     return Future.succeededFuture();
                 })
+                .mapEmpty()
                 .onFailure(err -> log.error("Failed to initialize configuration service: {}", err.getMessage()));
     }
 
