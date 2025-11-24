@@ -673,6 +673,10 @@ public class TelegramVerticle extends AbstractVerticle {
         log.error(e);
     }
 
+    public AvgSpeed.SpeedStats getCurrentSpeedStats() {
+        return avgSpeed.getSpeedStats();
+    }
+
     private void handleSaveAvgSpeed() {
         if (!authorized || telegramRecord == null) return;
         AvgSpeed.SpeedStats speedStats = avgSpeed.getSpeedStats();
