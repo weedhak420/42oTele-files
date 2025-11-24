@@ -36,6 +36,21 @@ public class MigrationManager {
                     new String[]{
                             "DROP INDEX IF EXISTS idx_file_record_auto_download;"
                     }
+            ),
+            new MigrationScript(
+                    "0.2.7-auto-download-optimizations",
+                    "Optimize auto download queries and cleanup paths",
+                    new String[]{
+                            "CREATE INDEX IF NOT EXISTS idx_file_auto_download ON file_record(chat_id, download_status, type, message_id DESC);",
+                            "CREATE INDEX IF NOT EXISTS idx_file_status ON file_record(download_status, telegram_id);",
+                            "CREATE INDEX IF NOT EXISTS idx_file_cleanup ON file_record(download_status, completion_date);",
+                            "ANALYZE file_record;"
+                    },
+                    new String[]{
+                            "DROP INDEX IF EXISTS idx_file_auto_download;",
+                            "DROP INDEX IF EXISTS idx_file_status;",
+                            "DROP INDEX IF EXISTS idx_file_cleanup;"
+                    }
             )
     );
 

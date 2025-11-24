@@ -28,6 +28,10 @@ public enum SettingKey {
             ? new telegram.files.ConfigurationService.AutoDownloadConfig()
             : new telegram.files.ConfigurationService.AutoDownloadConfig(new JsonObject(value)),
             new telegram.files.ConfigurationService.AutoDownloadConfig()),
+    maxConcurrentDownloads(Convert::toInt, 5),
+    enableAdaptiveConcurrency(Convert::toBool, true),
+    downloadRetryAttempts(Convert::toInt, 3),
+    downloadTimeout(Convert::toLong, 30 * 60 * 1000L),
     proxys(value -> StrUtil.isBlank(value) ? null : new JsonObject(value).mapTo(SettingProxyRecords.class)),
     /**
      * Interval for calculating average speed, in seconds

@@ -80,6 +80,20 @@ public class AutoDownloadVerticle extends AbstractVerticle {
 
     private long cleanupTimerId;
 
+    private long concurrencyAdjustTimerId;
+
+    private long stuckDownloadTimerId;
+
+    private volatile int maxConcurrentDownloads;
+
+    private volatile int currentConcurrentDownloads;
+
+    private boolean adaptiveConcurrencyEnabled;
+
+    private int downloadRetryAttempts;
+
+    private long downloadTimeoutMs;
+
     public AutoDownloadVerticle() {
         this.autoRecords = AutomationsHolder.INSTANCE.autoRecords();
         AutomationsHolder.INSTANCE.registerOnRemoveListener(removedItems -> removedItems.forEach(item ->
@@ -95,6 +109,9 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                     restartHistoryScanTimer();
                     restartDownloadTimer();
                     startCleanupTimer();
+                    startConcurrencyAdjuster();
+                    startStuckDownloadMonitor();
+                    adjustConcurrency();
 
                     log.info("""
                             Auto download verticle started!
@@ -143,7 +160,24 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         if (cleanupTimerId != 0) {
             vertx.cancelTimer(cleanupTimerId);
         }
-        cleanupTimerId = vertx.setPeriodic(Duration.ofHours(1).toMillis(), id -> cleanupOldData());
+        cleanupTimerId = vertx.setPeriodic(Duration.ofMinutes(10).toMillis(), id -> cleanupOldData());
+    }
+
+    private void startConcurrencyAdjuster() {
+        if (!adaptiveConcurrencyEnabled) {
+            return;
+        }
+        if (concurrencyAdjustTimerId != 0) {
+            vertx.cancelTimer(concurrencyAdjustTimerId);
+        }
+        concurrencyAdjustTimerId = vertx.setPeriodic(Duration.ofMinutes(2).toMillis(), id -> adjustConcurrency());
+    }
+
+    private void startStuckDownloadMonitor() {
+        if (stuckDownloadTimerId != 0) {
+            vertx.cancelTimer(stuckDownloadTimerId);
+        }
+        stuckDownloadTimerId = vertx.setPeriodic(Duration.ofMinutes(5).toMillis(), id -> checkStuckDownloads());
     }
 
     private void runHistoryScan() {
@@ -183,7 +217,39 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                         && Instant.ofEpochSecond(wrapper.message().date).isBefore(historyThreshold)));
 
         Instant retryThreshold = now.minus(Duration.ofHours(1));
-        retryContexts.entrySet().removeIf(entry -> Instant.ofEpochMilli(entry.getValue().getLastRetryTime()).isBefore(retryThreshold));
+        retryContexts.entrySet().removeIf(entry -> Instant.ofEpochMilli(entry.getValue().getLastAttemptTime()).isBefore(retryThreshold));
+
+        waitingDownloadMessages.forEach((telegramId, queue) -> {
+            if (queue.size() > 100) {
+                log.warn("Queue size for telegram %d exceeds 100, trimming oldest".formatted(telegramId));
+                while (queue.size() > 100) {
+                    queue.poll();
+                }
+            }
+        });
+    }
+
+    private void checkStuckDownloads() {
+        long cutoffTime = System.currentTimeMillis() - downloadTimeoutMs;
+        DataVerticle.fileRepository.getDownloadingFiles()
+                .onSuccess(files -> files.stream()
+                        .filter(file -> file.startDate() > 0 && file.startDate() < cutoffTime)
+                        .forEach(file -> {
+                            log.warn("Detected stuck download: %s (started %d min ago)".formatted(
+                                    file.fileName(),
+                                    (System.currentTimeMillis() - file.startDate()) / 60000));
+                            DataVerticle.fileRepository.updateDownloadStatus(
+                                            file.id(),
+                                            file.uniqueId(),
+                                            null,
+                                            FileRecord.DownloadStatus.idle,
+                                            null)
+                                    .onSuccess(v -> {
+                                        activeDownloads.remove(file.uniqueId());
+                                        retryContexts.remove(file.uniqueId());
+                                        log.info("Reset stuck download: %s".formatted(file.fileName()));
+                                    });
+                        }));
     }
 
     private Future<Void> initAutoDownload() {
@@ -192,10 +258,18 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         this.downloadInterval = configurationService.getValue("autoDownload", "downloadInterval", Integer.class);
         this.maxWaitingLength = configurationService.getValue("autoDownload", "maxWaitingLength", Integer.class);
         this.limit = configurationService.getValue("autoDownload", "maxConcurrentDownloads", Integer.class);
+        this.maxConcurrentDownloads = Math.max(1, limit);
+        this.currentConcurrentDownloads = this.maxConcurrentDownloads;
         this.defaultLimit = this.limit;
         this.adaptiveThrottlingEnabled = configurationService.getValue("autoDownload", "enableAdaptiveThrottling", Boolean.class);
+        Boolean adaptiveConcurrencySetting = Future.await(DataVerticle.settingRepository.getByKey(SettingKey.enableAdaptiveConcurrency));
+        this.adaptiveConcurrencyEnabled = adaptiveConcurrencySetting == null ? this.adaptiveThrottlingEnabled : adaptiveConcurrencySetting;
         this.retryAttempts = configurationService.getValue("autoDownload", "retryAttempts", Integer.class);
+        Integer configuredRetries = Future.await(DataVerticle.settingRepository.getByKey(SettingKey.downloadRetryAttempts));
+        this.downloadRetryAttempts = configuredRetries == null ? this.retryAttempts : configuredRetries;
         this.retryDelayMs = configurationService.getValue("autoDownload", "retryDelayMs", Long.class);
+        Long configuredTimeout = Future.await(DataVerticle.settingRepository.getByKey(SettingKey.downloadTimeout));
+        this.downloadTimeoutMs = configuredTimeout == null ? 30 * 60 * 1000L : configuredTimeout;
         adaptiveThrottler.reset(limit);
         return DataVerticle.settingRepository.<ConfigurationService.AutoDownloadConfig>getByKey(SettingKey.autoDownload)
                 .compose(this::applyAutoDownloadConfig)
@@ -217,9 +291,13 @@ public class AutoDownloadVerticle extends AbstractVerticle {
             this.downloadInterval = Convert.toInt(config.downloadInterval(), downloadInterval);
             this.maxWaitingLength = Convert.toInt(config.maxWaitingLength(), maxWaitingLength);
             this.limit = Convert.toInt(config.maxConcurrentDownloads(), limit);
+            this.maxConcurrentDownloads = Math.max(1, this.limit);
+            this.currentConcurrentDownloads = Math.min(this.currentConcurrentDownloads, this.maxConcurrentDownloads);
             this.defaultLimit = this.limit;
             this.adaptiveThrottlingEnabled = Convert.toBool(config.enableAdaptiveThrottling(), adaptiveThrottlingEnabled);
+            this.adaptiveConcurrencyEnabled = adaptiveConcurrencyEnabled || this.adaptiveThrottlingEnabled;
             this.retryAttempts = Convert.toInt(config.retryAttempts(), retryAttempts);
+            this.downloadRetryAttempts = Math.max(downloadRetryAttempts, this.retryAttempts);
             this.retryDelayMs = Convert.toLong(config.retryDelayMs(), retryDelayMs);
             adaptiveThrottler.reset(limit);
         }
@@ -488,15 +566,61 @@ public class AutoDownloadVerticle extends AbstractVerticle {
 
     private int getEffectiveLimit(long telegramId) {
         int configuredLimit = limit == 0 ? defaultLimit : limit;
+        int adaptiveLimit = adaptiveConcurrencyEnabled ? currentConcurrentDownloads : configuredLimit;
         if (!adaptiveThrottlingEnabled) {
-            return configuredLimit;
+            return Math.min(adaptiveLimit, maxConcurrentDownloads);
         }
         if (telegramId == 0) {
-            return adaptiveThrottler.getCurrentLimit(configuredLimit);
+            return Math.min(adaptiveThrottler.getCurrentLimit(adaptiveLimit), maxConcurrentDownloads);
         }
         return TelegramVerticles.get(telegramId)
-                .map(telegramVerticle -> adaptiveThrottler.calculateLimit(getAverageSpeed(telegramVerticle), configuredLimit))
-                .orElse(adaptiveThrottler.getCurrentLimit(configuredLimit));
+                .map(telegramVerticle -> adaptiveThrottler.calculateLimit(getAverageSpeed(telegramVerticle), adaptiveLimit))
+                .orElse(adaptiveThrottler.getCurrentLimit(adaptiveLimit));
+    }
+
+    private void adjustConcurrency() {
+        if (!adaptiveConcurrencyEnabled) {
+            return;
+        }
+        long avgSpeedBytes = calculateGlobalAverageSpeed();
+        long avgSpeedMBps = avgSpeedBytes / 1_000_000L;
+        int targetLimit;
+        if (avgSpeedMBps > 10) {
+            targetLimit = 20;
+        } else if (avgSpeedMBps > 5) {
+            targetLimit = 15;
+        } else if (avgSpeedMBps > 2) {
+            targetLimit = 10;
+        } else if (avgSpeedMBps > 1) {
+            targetLimit = 5;
+        } else {
+            targetLimit = 3;
+        }
+
+        targetLimit = Math.min(targetLimit, maxConcurrentDownloads);
+        int updatedLimit = currentConcurrentDownloads;
+        if (targetLimit > updatedLimit) {
+            updatedLimit = Math.min(targetLimit, updatedLimit + 2);
+        } else if (targetLimit < updatedLimit) {
+            updatedLimit = Math.max(targetLimit, updatedLimit - 2);
+        }
+        updatedLimit = Math.max(1, updatedLimit);
+        if (updatedLimit != currentConcurrentDownloads) {
+            log.info("Adjusted concurrent downloads: %d (speed: %d MB/s)".formatted(updatedLimit, avgSpeedMBps));
+        }
+        currentConcurrentDownloads = updatedLimit;
+    }
+
+    private long calculateGlobalAverageSpeed() {
+        List<TelegramVerticle> telegrams = TelegramVerticles.getAll();
+        if (CollUtil.isEmpty(telegrams)) {
+            return 0L;
+        }
+        return (long) telegrams.stream()
+                .map(TelegramVerticle::getCurrentSpeedStats)
+                .mapToLong(AvgSpeed.SpeedStats::avgSpeed)
+                .average()
+                .orElse(0);
     }
 
     private long getAverageSpeed(TelegramVerticle telegramVerticle) {
@@ -677,7 +801,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                 .formatted(messageWrapper.message().chatId, messageWrapper.message().id, uniqueId), e);
         activeDownloads.remove(uniqueId);
         context.recordFailure(e);
-        if (context.getRetryCount() > retryAttempts) {
+        if (!context.shouldRetry(downloadRetryAttempts)) {
             retryContexts.remove(uniqueId);
             return;
         }
@@ -685,9 +809,9 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         publishMetricUpdate(new JsonObject()
                 .put("type", "downloadFailure")
                 .put("uniqueId", uniqueId)
-                .put("retryCount", context.getRetryCount()));
+                .put("retryCount", context.getAttempts()));
 
-        long delay = retryDelayMs * (long) Math.pow(2, context.getRetryCount());
+        long delay = context.nextDelayMillis();
         vertx.setTimer(delay, id -> {
             waitingDownloadMessages.computeIfAbsent(telegramId, key -> new ConcurrentLinkedQueue<>())
                     .offer(messageWrapper);

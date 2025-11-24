@@ -13,8 +13,6 @@ public class TelegramUpdateHandler implements Client.ResultHandler {
 
     private static final Log log = LogFactory.get();
 
-    private static final long EVENT_THROTTLE_MS = 1000L;
-
     private Consumer<TdApi.AuthorizationState> onAuthorizationStateUpdated;
 
     private Consumer<TdApi.UpdateFile> onFileUpdated;
@@ -25,7 +23,36 @@ public class TelegramUpdateHandler implements Client.ResultHandler {
 
     private Consumer<TdApi.Message> onMessageReceived;
 
-    private final Map<Integer, Long> lastEventTime = new ConcurrentHashMap<>();
+    private final Map<Integer, FileEventThrottle> fileEventThrottlers = new ConcurrentHashMap<>();
+
+    private static class FileEventThrottle {
+        private long lastEventTime;
+        private long lastDownloadedSize;
+        private static final long MIN_INTERVAL_MS = 1000L;
+        private static final long MIN_SIZE_DELTA = 1_000_000L;
+
+        boolean shouldSendEvent(TdApi.File file) {
+            long now = System.currentTimeMillis();
+            long currentSize = file.local.downloadedSize;
+
+            if (file.local.isDownloadingCompleted || lastEventTime == 0) {
+                lastEventTime = now;
+                lastDownloadedSize = currentSize;
+                return true;
+            }
+
+            boolean timeThrottled = (now - lastEventTime) >= MIN_INTERVAL_MS;
+            boolean sizeThrottled = (currentSize - lastDownloadedSize) >= MIN_SIZE_DELTA;
+
+            if (timeThrottled || sizeThrottled) {
+                lastEventTime = now;
+                lastDownloadedSize = currentSize;
+                return true;
+            }
+
+            return false;
+        }
+    }
 
     @Override
     public void onResult(TdApi.Object object) {
@@ -65,18 +92,15 @@ public class TelegramUpdateHandler implements Client.ResultHandler {
     private void handleFileUpdated(TdApi.UpdateFile update) {
         TdApi.File file = update.file;
         if (file != null && file.local != null && (file.local.isDownloadingActive || file.local.isDownloadingCompleted)) {
-            long now = System.currentTimeMillis();
-            Long lastTime = lastEventTime.get(file.id);
-            boolean isComplete = file.local.isDownloadingCompleted;
-            boolean shouldSend = lastTime == null || (now - lastTime) > EVENT_THROTTLE_MS || isComplete;
+            FileEventThrottle throttle = fileEventThrottlers.computeIfAbsent(file.id, id -> new FileEventThrottle());
+            boolean shouldSend = throttle.shouldSendEvent(file);
 
             if (!shouldSend) {
                 return;
             }
 
-            lastEventTime.put(file.id, now);
-            if (isComplete) {
-                lastEventTime.remove(file.id);
+            if (file.local.isDownloadingCompleted) {
+                fileEventThrottlers.remove(file.id);
             }
         }
 

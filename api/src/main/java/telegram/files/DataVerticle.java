@@ -94,6 +94,7 @@ public class DataVerticle extends AbstractVerticle {
                     return Future.all(definitions.stream().map(d -> d.migrate(pool, version, new Version(Start.VERSION))).toList());
                 })
                 .compose(r -> MigrationManager.applyMigrations(pool))
+                .compose(r -> optimizeTables())
                 .compose(r ->
                         settingRepository.createOrUpdate(SettingKey.version.name(), Start.VERSION))
                 .compose(r -> configurationService.init())
@@ -157,6 +158,17 @@ public class DataVerticle extends AbstractVerticle {
         }
 
         return createPool(vertx, sqlConnectOptions, poolOptions);
+    }
+
+    private Future<Void> optimizeTables() {
+        if (!Config.isSqlite()) {
+            return Future.succeededFuture();
+        }
+        return pool.query("PRAGMA optimize;")
+                .execute()
+                .compose(v -> pool.query("PRAGMA analysis_limit=1000;").execute())
+                .compose(v -> pool.query("PRAGMA auto_vacuum=INCREMENTAL;").execute())
+                .mapEmpty();
     }
 
     private Future<Boolean> isCompletelyNewInitialization() {

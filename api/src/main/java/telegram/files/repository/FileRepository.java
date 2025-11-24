@@ -64,6 +64,8 @@ public interface FileRepository {
                                                               long cursorMessageId,
                                                               int pageSize);
 
+    Future<List<FileRecord>> getDownloadingFiles();
+
     Future<List<FileRecord>> streamFiles(long chatId, long afterMessageId, int limit);
 
     Future<Void> updateTags(String uniqueId, String tags);

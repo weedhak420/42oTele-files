@@ -861,6 +861,15 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
     }
 
     @Override
+    public Future<List<FileRecord>> getDownloadingFiles() {
+        String sql = "SELECT * FROM file_record WHERE download_status = 'downloading'";
+        return timed(sql, Map.of(),
+                sqlClient.query(sql)
+                        .execute()
+                        .map(rs -> rs.stream().map(FileRecord.ROW_MAPPER).toList()));
+    }
+
+    @Override
     public Future<Integer> deleteOrphanedRecords() {
         String sql = """
                 DELETE FROM file_record

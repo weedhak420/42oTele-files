@@ -2,32 +2,43 @@ package telegram.files;
 
 public class RetryContext {
 
-    private int retryCount;
+    private static final long[] BACKOFF_DELAYS = {5_000L, 15_000L, 60_000L};
 
-    private long lastRetryTime;
+    private int attempts;
+
+    private long lastAttemptTime;
 
     private String lastError;
 
     public RetryContext() {
-        this.retryCount = 0;
-        this.lastRetryTime = System.currentTimeMillis();
+        this.attempts = 0;
+        this.lastAttemptTime = System.currentTimeMillis();
     }
 
-    public int getRetryCount() {
-        return retryCount;
+    public int getAttempts() {
+        return attempts;
     }
 
-    public long getLastRetryTime() {
-        return lastRetryTime;
+    public long getLastAttemptTime() {
+        return lastAttemptTime;
     }
 
     public String getLastError() {
         return lastError;
     }
 
+    public boolean shouldRetry(int maxAttempts) {
+        return attempts < maxAttempts;
+    }
+
+    public long nextDelayMillis() {
+        int index = Math.min(attempts, BACKOFF_DELAYS.length - 1);
+        return BACKOFF_DELAYS[index];
+    }
+
     public void recordFailure(Throwable e) {
-        retryCount++;
-        lastRetryTime = System.currentTimeMillis();
+        attempts++;
+        lastAttemptTime = System.currentTimeMillis();
         lastError = e.getMessage();
     }
 }
