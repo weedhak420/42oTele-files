@@ -25,6 +25,9 @@ import org.jooq.lambda.tuple.Tuple;
 import org.jooq.lambda.tuple.Tuple2;
 import telegram.files.repository.*;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -226,11 +229,22 @@ public class TelegramVerticle extends AbstractVerticle {
     }
 
     public boolean check() {
-        if (StrUtil.isBlank(this.rootPath) || !vertx.fileSystem().existsBlocking(this.rootPath)) {
-            log.error("[%s] Telegram account is invalid, root path: %s not exist.".formatted(this.getRootId(), this.rootPath));
+        if (StrUtil.isBlank(this.rootPath)) {
+            log.error("[%s] Telegram account is invalid, root path is blank.".formatted(this.getRootId()));
             return false;
         }
-        return true;
+
+        try {
+            Path path = Paths.get(this.rootPath);
+            boolean exists = Files.exists(path);
+            if (!exists) {
+                log.error("[%s] Telegram account is invalid, root path: %s not exist.".formatted(this.getRootId(), this.rootPath));
+            }
+            return exists;
+        } catch (Exception e) {
+            log.error("[%s] Failed to check root path: %s".formatted(this.getRootId(), e.getMessage()));
+            return false;
+        }
     }
 
     public Future<JsonObject> getTelegramAccount() {
