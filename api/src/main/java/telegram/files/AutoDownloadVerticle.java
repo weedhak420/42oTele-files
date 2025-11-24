@@ -207,7 +207,8 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                         .mapEmpty())
                 // Ensure the composed init chain returns Future<Void> for consistent error handling
                 .mapEmpty()
-                .onFailure(e -> log.error("Get Auto download settings failed!", e));
+                .onFailure(e -> log.error("Get Auto download settings failed!", e))
+                .mapEmpty();
     }
 
     private Future<Void> applyAutoDownloadConfig(ConfigurationService.AutoDownloadConfig config) {

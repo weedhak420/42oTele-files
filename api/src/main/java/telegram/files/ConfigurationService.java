@@ -74,7 +74,8 @@ public class ConfigurationService {
                 })
                 // Ensure the initialization chain returns Future<Void> before attaching failure handlers
                 .mapEmpty()
-                .onFailure(err -> log.error("Failed to initialize configuration service: {}", err.getMessage()));
+                .onFailure(err -> log.error("Failed to initialize configuration service: {}", err.getMessage()))
+                .mapEmpty();
     }
 
     private void registerDefaults() {
