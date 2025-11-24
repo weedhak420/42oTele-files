@@ -9,6 +9,8 @@ import cn.hutool.core.map.MapUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.log.Log;
 import cn.hutool.log.LogFactory;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
 import io.vertx.core.Future;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
@@ -26,16 +28,39 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 public class FileRepositoryImpl extends AbstractSqlRepository implements FileRepository {
 
     private static final Log log = LogFactory.get();
+    private static final Cache<String, Object> queryCache = CacheBuilder.newBuilder()
+            .expireAfterWrite(Duration.ofSeconds(30))
+            .maximumSize(512)
+            .build();
 
     public FileRepositoryImpl(SqlClient sqlClient) {
         super(sqlClient);
+    }
+
+    private void logSlowQuery(String sql, Map<String, Object> params, long elapsedMs) {
+        if (elapsedMs <= Config.DB_SLOW_QUERY_THRESHOLD_MS) {
+            return;
+        }
+        log.warn("Slow query (%d ms): %s params: %s".formatted(elapsedMs, sql, params));
+        if (Config.isSqlite()) {
+            sqlClient.query("EXPLAIN QUERY PLAN " + sql.replaceAll("#\\{[^}]+}\\", "?"))
+                    .execute()
+                    .onSuccess(plan -> log.debug("SQLite plan: %s".formatted(plan.iterator().next().toJson())));
+        }
+    }
+
+    private <T> Future<T> timed(String sql, Map<String, Object> params, Future<T> future) {
+        long start = System.currentTimeMillis();
+        return future.onComplete(ar -> logSlowQuery(sql, params, System.currentTimeMillis() - start));
     }
 
     @Override
@@ -321,6 +346,11 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
 
     @Override
     public Future<JsonObject> getDownloadStatistics(long telegramId) {
+        String cacheKey = "downloadStats:" + telegramId;
+        JsonObject cached = (JsonObject) queryCache.getIfPresent(cacheKey);
+        if (cached != null) {
+            return Future.succeededFuture(cached.copy());
+        }
         return SqlTemplate
                 .forQuery(sqlClient, """
                         SELECT COUNT(*)                                                                     AS total,
@@ -350,11 +380,17 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
                 })
                 .execute(Map.of("telegramId", telegramId))
                 .map(rs -> rs.size() > 0 ? rs.iterator().next() : JsonObject.of())
+                .onSuccess(result -> queryCache.put(cacheKey, result))
                 .onFailure(err -> log.error("Failed to get download statistics: %s".formatted(err.getMessage())));
     }
 
     @Override
     public Future<JsonObject> getDownloadStatistics() {
+        String cacheKey = "downloadStats:all";
+        JsonObject cached = (JsonObject) queryCache.getIfPresent(cacheKey);
+        if (cached != null) {
+            return Future.succeededFuture(cached.copy());
+        }
         return SqlTemplate
                 .forQuery(sqlClient, """
                         SELECT COUNT(CASE WHEN download_status = 'downloading' THEN 1 END)                  AS downloading,
@@ -372,6 +408,7 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
                 })
                 .execute(Map.of())
                 .map(rs -> rs.size() > 0 ? rs.iterator().next() : JsonObject.of())
+                .onSuccess(result -> queryCache.put(cacheKey, result))
                 .onFailure(err -> log.error("Failed to get download statistics: %s".formatted(err.getMessage())));
     }
 
@@ -585,6 +622,97 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
     }
 
     @Override
+    public Future<Void> batchCreate(List<FileRecord> records) {
+        if (CollUtil.isEmpty(records)) {
+            return Future.succeededFuture();
+        }
+        String sql = """
+                INSERT INTO file_record(id, unique_id, telegram_id, chat_id, message_id, media_album_id, date, has_sensitive_content,
+                                        size, downloaded_size, type, mime_type, file_name, thumbnail, thumbnail_unique_id,
+                                        caption, extra, local_path, download_status, start_date, transfer_status, tags,
+                                        thread_chat_id, message_thread_id, reaction_count)
+                VALUES (#{id}, #{unique_id}, #{telegram_id}, #{chat_id}, #{message_id}, #{media_album_id}, #{date},
+                        #{has_sensitive_content}, #{size}, #{downloaded_size}, #{type}, #{mime_type}, #{file_name}, #{thumbnail},
+                        #{thumbnail_unique_id}, #{caption}, #{extra}, #{local_path}, #{download_status}, #{start_date},
+                        #{transfer_status}, #{tags}, #{thread_chat_id}, #{message_thread_id}, #{reaction_count})
+                """;
+        Map<String, Object> params = Map.of("batchSize", records.size());
+        return timed(sql, params,
+                SqlTemplate.forUpdate(sqlClient, sql)
+                        .mapFrom(FileRecord.PARAM_MAPPER)
+                        .executeBatch(records)
+                        .onSuccess(r -> log.debug("Batch inserted %d file records".formatted(records.size())))
+                        .onFailure(err -> log.error("Failed batch insert: %s".formatted(err.getMessage())))
+                        .mapEmpty());
+    }
+
+    @Override
+    public Future<Void> batchUpdateStatuses(List<FileRecord> records) {
+        if (CollUtil.isEmpty(records)) {
+            return Future.succeededFuture();
+        }
+        String sql = """
+                UPDATE file_record
+                SET download_status = #{download_status},
+                    local_path = #{local_path},
+                    completion_date = #{completion_date},
+                    transfer_status = #{transfer_status}
+                WHERE unique_id = #{unique_id}
+                """;
+        Map<String, Object> params = Map.of("batchSize", records.size());
+        List<Map<String, Object>> mapped = records.stream()
+                .map(r -> MapUtil.ofEntries(
+                        MapUtil.entry("download_status", r.downloadStatus()),
+                        MapUtil.entry("local_path", r.localPath()),
+                        MapUtil.entry("completion_date", r.completionDate()),
+                        MapUtil.entry("transfer_status", r.transferStatus()),
+                        MapUtil.entry("unique_id", r.uniqueId())
+                ))
+                .toList();
+        return timed(sql, params,
+                SqlTemplate.forUpdate(sqlClient, sql)
+                        .executeBatch(mapped)
+                        .onSuccess(r -> log.debug("Batch updated %d file statuses".formatted(records.size())))
+                        .onFailure(err -> log.error("Failed batch status update: %s".formatted(err.getMessage())))
+                        .mapEmpty());
+    }
+
+    @Override
+    public Future<Tuple3<List<FileRecord>, Long, Long>> getFilesPaged(long chatId,
+                                                                      Map<String, String> filter,
+                                                                      long cursorMessageId,
+                                                                      int pageSize) {
+        Map<String, String> patchedFilter = new HashMap<>(filter);
+        patchedFilter.put("limit", String.valueOf(pageSize));
+        patchedFilter.put("fromMessageId", String.valueOf(cursorMessageId));
+        return getFiles(chatId, patchedFilter);
+    }
+
+    @Override
+    public Future<List<FileRecord>> streamFiles(long chatId, long afterMessageId, int limit) {
+        Map<String, Object> params = Map.of("chatId", chatId, "after", afterMessageId, "limit", limit);
+        String sql = """
+                SELECT id, unique_id, telegram_id, chat_id, message_id, media_album_id, date,
+                       has_sensitive_content, size, downloaded_size, type, mime_type, file_name,
+                       thumbnail, thumbnail_unique_id, caption, extra, local_path, download_status,
+                       transfer_status, start_date, completion_date, tags, thread_chat_id, message_thread_id,
+                       reaction_count
+                FROM file_record
+                WHERE chat_id = #{chatId}
+                  AND message_id > #{after}
+                  AND type != 'thumbnail'
+                ORDER BY message_id
+                LIMIT #{limit}
+                """;
+        return timed(sql, params,
+                SqlTemplate.forQuery(sqlClient, sql)
+                        .mapTo(FileRecord.ROW_MAPPER)
+                        .execute(params)
+                        .map(IterUtil::toList)
+                        .onFailure(err -> log.error("Failed to stream files: %s".formatted(err.getMessage()))));
+    }
+
+    @Override
     public Future<JsonObject> updateTransferStatus(String uniqueId,
                                                    FileRecord.TransferStatus transferStatus,
                                                    String localPath) {
@@ -706,18 +834,44 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
 
     @Override
     public Future<List<FileRecord>> getIdleFilesByChatId(long chatId) {
-        return SqlTemplate
-                .forQuery(sqlClient, """
-                        SELECT *
-                        FROM file_record
-                        WHERE chat_id = #{chatId}
-                          AND download_status = 'idle'
-                          AND type != 'thumbnail'
-                        """)
-                .mapTo(FileRecord.ROW_MAPPER)
-                .execute(Map.of("chatId", chatId))
-                .onFailure(err -> log.error("Failed to get idle files by chat: %s".formatted(err.getMessage())))
-                .map(IterUtil::toList);
+        return getIdleFilesByChatId(chatId, 50);
+    }
+
+    @Override
+    public Future<List<FileRecord>> getIdleFilesByChatId(long chatId, int limit) {
+        Map<String, Object> params = Map.of("chatId", chatId, "limit", limit);
+        String sql = """
+                SELECT *
+                FROM file_record
+                WHERE chat_id = #{chatId}
+                  AND download_status = 'idle'
+                  AND type != 'thumbnail'
+                ORDER BY message_id DESC
+                LIMIT #{limit}
+                """;
+        return timed(sql, params,
+                SqlTemplate
+                        .forQuery(sqlClient, sql)
+                        .mapTo(FileRecord.ROW_MAPPER)
+                        .execute(params)
+                        .onFailure(err -> log.error("Failed to get idle files by chat: %s".formatted(err.getMessage())))
+                        .map(IterUtil::toList));
+    }
+
+    @Override
+    public Future<Integer> deleteOrphanedRecords() {
+        String sql = """
+                DELETE FROM file_record
+                WHERE telegram_id NOT IN (SELECT id FROM telegram_record)
+                """;
+        Map<String, Object> params = Map.of();
+        return timed(sql, params,
+                SqlTemplate
+                        .forUpdate(sqlClient, sql)
+                        .execute(params)
+                        .map(SqlResult::rowCount)
+                        .onSuccess(rows -> log.info("Removed %d orphaned file records".formatted(rows)))
+                        .onFailure(err -> log.error("Failed to cleanup orphaned file records: %s".formatted(err.getMessage()))));
     }
 
     @Override

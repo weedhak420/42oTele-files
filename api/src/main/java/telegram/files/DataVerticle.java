@@ -15,12 +15,15 @@ import io.vertx.sqlclient.Pool;
 import io.vertx.sqlclient.PoolOptions;
 import io.vertx.sqlclient.SqlClient;
 import io.vertx.sqlclient.SqlConnectOptions;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 import org.jooq.lambda.tuple.Tuple;
 import telegram.files.repository.*;
 import telegram.files.repository.impl.FileRepositoryImpl;
 import telegram.files.repository.impl.SettingRepositoryImpl;
 import telegram.files.repository.impl.StatisticRepositoryImpl;
 import telegram.files.repository.impl.TelegramRepositoryImpl;
+import telegram.files.repository.migration.MigrationManager;
 
 import java.io.File;
 import java.util.List;
@@ -38,6 +41,8 @@ public class DataVerticle extends AbstractVerticle {
     public static SettingRepository settingRepository;
 
     public static StatisticRepository statisticRepository;
+    private static HikariDataSource hikariDataSource;
+    private static DatabaseMaintenanceService databaseMaintenanceService;
 
     private static SqlConnectOptions sqlConnectOptions;
 
@@ -56,6 +61,7 @@ public class DataVerticle extends AbstractVerticle {
 
         definitions = List.of(
                 new SettingRecord.SettingRecordDefinition(),
+                new SchemaVersionRecord.SchemaVersionDefinition(),
                 new TelegramRecord.TelegramRecordDefinition(),
                 new FileRecord.FileRecordDefinition(),
                 new StatisticRecord.StatisticRecordDefinition()
@@ -68,6 +74,8 @@ public class DataVerticle extends AbstractVerticle {
         telegramRepository = new TelegramRepositoryImpl(pool);
         fileRepository = new FileRepositoryImpl(pool);
         statisticRepository = new StatisticRepositoryImpl(pool);
+        statisticRepository.startBufferedWriter(vertx);
+        databaseMaintenanceService = new DatabaseMaintenanceService(pool, fileRepository, vertx);
         isCompletelyNewInitialization()
                 .compose(isNew -> Future.all(definitions.stream().map(d -> d.createTable(pool)).toList()).map(isNew))
                 .compose(isNew -> settingRepository.<Version>getByKey(SettingKey.version).map(version -> Tuple.tuple(isNew, version)))
@@ -77,10 +85,12 @@ public class DataVerticle extends AbstractVerticle {
                     Version version = tuple.v2 == null ? new Version("0.0.0") : tuple.v2;
                     return Future.all(definitions.stream().map(d -> d.migrate(pool, version, new Version(Start.VERSION))).toList());
                 })
+                .compose(r -> MigrationManager.applyMigrations(pool))
                 .compose(r ->
                         settingRepository.createOrUpdate(SettingKey.version.name(), Start.VERSION))
                 .onSuccess(r -> {
                     log.info("Database {} initialized.", Config.DB_TYPE);
+                    databaseMaintenanceService.start();
                     stopPromise.complete();
                 })
                 .onFailure(err -> {
@@ -98,6 +108,9 @@ public class DataVerticle extends AbstractVerticle {
                 } else {
                     log.error("Failed to close data verticle: %s".formatted(r.cause().getMessage()));
                 }
+                if (hikariDataSource != null) {
+                    hikariDataSource.close();
+                }
                 stopPromise.complete();
             });
         }
@@ -113,16 +126,28 @@ public class DataVerticle extends AbstractVerticle {
     private Pool buildSqlClient() {
         PoolOptions poolOptions = new PoolOptions()
                 .setShared(true)
-                .setMaxSize(8)
+                .setMaxSize(Config.DB_POOL_SIZE)
                 .setName("pool-tf")
-                .setIdleTimeout(300000)
-                .setPoolCleanerPeriod(300000);
+                .setIdleTimeout(Config.DB_IDLE_TIMEOUT_MS)
+                .setPoolCleanerPeriod(Config.DB_IDLE_TIMEOUT_MS);
 
-        return createPool(vertx,
-                Config.isSqlite() ? new JDBCConnectOptions()
-                        .setJdbcUrl("jdbc:sqlite:%s?journal_mode=WAL&busy_timeout=30000&synchronous=NORMAL&cache_size=-2000".formatted(getDataPath())) :
-                        sqlConnectOptions,
-                poolOptions);
+        if (Config.isSqlite()) {
+            HikariConfig hikariConfig = new HikariConfig();
+            hikariConfig.setJdbcUrl("jdbc:sqlite:%s".formatted(getDataPath()));
+            hikariConfig.setPoolName("tf-hikari");
+            hikariConfig.setMaximumPoolSize(Config.DB_POOL_SIZE);
+            hikariConfig.setConnectionTimeout(Config.DB_CONNECTION_TIMEOUT_MS);
+            hikariConfig.setMaxLifetime(Config.DB_MAX_LIFETIME_MS);
+            hikariConfig.setIdleTimeout(Config.DB_IDLE_TIMEOUT_MS);
+            hikariConfig.addDataSourceProperty("journal_mode", "WAL");
+            hikariConfig.addDataSourceProperty("busy_timeout", "30000");
+            hikariConfig.addDataSourceProperty("synchronous", "NORMAL");
+            hikariConfig.addDataSourceProperty("cache_size", "-2000");
+            hikariDataSource = new HikariDataSource(hikariConfig);
+            return JDBCPool.pool(vertx, hikariDataSource, poolOptions);
+        }
+
+        return createPool(vertx, sqlConnectOptions, poolOptions);
     }
 
     private Future<Boolean> isCompletelyNewInitialization() {
@@ -229,6 +254,12 @@ public class DataVerticle extends AbstractVerticle {
 
     public static SqlConnectOptions getSqlConnectOptions() {
         return sqlConnectOptions;
+    }
+
+    public static DatabaseMetrics getDatabaseMetrics() {
+        long sizeBytes = databaseMaintenanceService == null ? 0L : databaseMaintenanceService.getDatabaseSize();
+        long lastVacuum = databaseMaintenanceService == null ? 0L : databaseMaintenanceService.getLastVacuum();
+        return DatabaseMetrics.from(hikariDataSource, pool, sizeBytes, lastVacuum);
     }
 
     public static SqlConnectOptions createDefaultOptions() {

@@ -35,6 +35,29 @@ public class FileRecordRetriever {
                 });
     }
 
+    public static Future<JsonObject> getFilesOptimized(long chatId, Map<String, String> filter, long cursorMessageId, int limit) {
+        return DataVerticle.fileRepository.getFilesPaged(chatId, filter, cursorMessageId, limit)
+                .compose(r -> getTdMessages(r.v1).map(r::concat))
+                .compose(r -> getThumbnails(r.v1).map(r::concat))
+                .map(r -> {
+                    Map<String, TdApi.Message> messageMap = r.v4;
+                    Map<String, FileRecord> thumbnailMap = r.v5;
+                    List<JsonObject> fileRecords = r.v1.stream()
+                            .map(fileRecord -> TelegramConverter.withSource(fileRecord.telegramId(),
+                                    fileRecord,
+                                    StrUtil.isBlank(fileRecord.thumbnailUniqueId()) ? null : thumbnailMap.get(fileRecord.thumbnailUniqueId()),
+                                    messageMap.get(fileRecord.uniqueId())
+                            ))
+                            .filter(Objects::nonNull)
+                            .toList();
+                    return new JsonObject()
+                            .put("files", fileRecords)
+                            .put("nextFromMessageId", r.v2)
+                            .put("count", r.v3)
+                            .put("size", fileRecords.size());
+                });
+    }
+
     /**
      * Get messages from telegram
      *

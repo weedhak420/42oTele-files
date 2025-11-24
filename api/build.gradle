@@ -29,6 +29,7 @@ dependencies {
     implementation 'com.ongres.scram:scram-client:3.1'
     implementation 'io.agroal:agroal-api:1.16'
     implementation 'io.agroal:agroal-pool:1.16'
+    implementation 'com.zaxxer:HikariCP:6.2.1'
     implementation 'cn.hutool:hutool-core:5.8.34'
     implementation 'cn.hutool:hutool-log:5.8.34'
     implementation 'org.jooq:jool:0.9.15'

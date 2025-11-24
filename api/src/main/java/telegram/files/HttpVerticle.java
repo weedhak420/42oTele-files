@@ -162,6 +162,7 @@ public class HttpVerticle extends AbstractVerticle {
         router.get("/api/metrics/history").handler(this::handlePerformanceHistory);
         router.get("/api/metrics/health").handler(this::handlePerformanceHealth);
         router.get("/api/metrics/resources").handler(this::handleResourceMetrics);
+        router.get("/api/metrics/database").handler(this::handleDatabaseMetrics);
         router.get("/api/metrics/recommendations").handler(this::handleRecommendations);
         router.get("/api/alerts").handler(this::handleAlerts);
 
@@ -801,6 +802,14 @@ public class HttpVerticle extends AbstractVerticle {
 
     private void handleResourceMetrics(RoutingContext ctx) {
         requestMetrics(PerformanceMonitorVerticle.METRICS_RESOURCES_ADDRESS, ctx);
+    }
+
+    private void handleDatabaseMetrics(RoutingContext ctx) {
+        DatabaseMetrics metrics = DataVerticle.getDatabaseMetrics();
+        ctx.json(new JsonObject()
+                .put("timestamp", System.currentTimeMillis())
+                .put("metrics", metrics.toJson())
+                .put("status", "ok"));
     }
 
     private void handleRecommendations(RoutingContext ctx) {

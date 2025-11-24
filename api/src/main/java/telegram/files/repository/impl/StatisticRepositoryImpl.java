@@ -5,17 +5,23 @@ import cn.hutool.core.convert.Convert;
 import cn.hutool.log.Log;
 import cn.hutool.log.LogFactory;
 import io.vertx.core.Future;
+import io.vertx.core.Vertx;
 import io.vertx.sqlclient.SqlClient;
 import io.vertx.sqlclient.templates.SqlTemplate;
 import telegram.files.repository.StatisticRecord;
 import telegram.files.repository.StatisticRepository;
 
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
 public class StatisticRepositoryImpl extends AbstractSqlRepository implements StatisticRepository {
 
     private static final Log log = LogFactory.get();
+    private final List<StatisticRecord> buffer = Collections.synchronizedList(new ArrayList<>());
+    private volatile boolean bufferingEnabled = false;
 
     public StatisticRepositoryImpl(SqlClient sqlClient) {
         super(sqlClient);
@@ -23,6 +29,37 @@ public class StatisticRepositoryImpl extends AbstractSqlRepository implements St
 
     @Override
     public Future<Void> create(StatisticRecord record) {
+        if (bufferingEnabled) {
+            buffer.add(record);
+            return Future.succeededFuture();
+        }
+        return doInsert(record);
+    }
+
+    @Override
+    public Future<Void> batchCreate(List<StatisticRecord> records) {
+        if (records == null || records.isEmpty()) {
+            return Future.succeededFuture();
+        }
+        return SqlTemplate
+                .forUpdate(sqlClient, """
+                        INSERT INTO statistic_record(related_id, type, timestamp, data)
+                        VALUES (#{related_id}, #{type}, #{timestamp}, #{data})
+                        """)
+                .mapFrom(StatisticRecord.PARAM_MAPPER)
+                .executeBatch(records)
+                .onSuccess(r -> log.trace("Batch inserted %d statistic records".formatted(records.size())))
+                .onFailure(err -> log.error("Failed to batch insert statistics: %s".formatted(err.getMessage())))
+                .mapEmpty();
+    }
+
+    @Override
+    public void startBufferedWriter(Vertx vertx) {
+        bufferingEnabled = true;
+        vertx.setPeriodic(Duration.ofMinutes(1).toMillis(), id -> flushBuffer());
+    }
+
+    private Future<Void> doInsert(StatisticRecord record) {
         return SqlTemplate
                 .forUpdate(sqlClient, """
                         INSERT INTO statistic_record(related_id, type, timestamp, data)
@@ -35,6 +72,18 @@ public class StatisticRepositoryImpl extends AbstractSqlRepository implements St
                         err -> log.error("Failed to create statistic record: %s".formatted(err.getMessage()))
                 )
                 .mapEmpty();
+    }
+
+    private Future<Void> flushBuffer() {
+        List<StatisticRecord> snapshot;
+        synchronized (buffer) {
+            if (buffer.isEmpty()) {
+                return Future.succeededFuture();
+            }
+            snapshot = List.copyOf(buffer);
+            buffer.clear();
+        }
+        return batchCreate(snapshot);
     }
 
     @Override

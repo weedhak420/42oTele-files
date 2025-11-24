@@ -53,7 +53,22 @@ public interface FileRepository {
 
     Future<List<FileRecord>> getIdleFilesByChatId(long chatId);
 
+    Future<List<FileRecord>> getIdleFilesByChatId(long chatId, int limit);
+
+    Future<Void> batchCreate(List<FileRecord> records);
+
+    Future<Void> batchUpdateStatuses(List<FileRecord> records);
+
+    Future<Tuple3<List<FileRecord>, Long, Long>> getFilesPaged(long chatId,
+                                                              Map<String, String> filter,
+                                                              long cursorMessageId,
+                                                              int pageSize);
+
+    Future<List<FileRecord>> streamFiles(long chatId, long afterMessageId, int limit);
+
     Future<Void> updateTags(String uniqueId, String tags);
 
     Future<Void> deleteByUniqueId(String uniqueId);
+
+    Future<Integer> deleteOrphanedRecords();
 }

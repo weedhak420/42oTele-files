@@ -36,6 +36,16 @@ public class Config {
 
     public static final boolean DB_NEED_CREATE = Convert.toBool(System.getenv("DB_NEED_CREATE"), false);
 
+    public static final int DB_POOL_SIZE = Convert.toInt(System.getenv("DB_POOL_SIZE"), 16);
+
+    public static final int DB_CONNECTION_TIMEOUT_MS = Convert.toInt(System.getenv("DB_CONNECTION_TIMEOUT_MS"), 10_000);
+
+    public static final int DB_MAX_LIFETIME_MS = Convert.toInt(System.getenv("DB_MAX_LIFETIME_MS"), 300_000);
+
+    public static final int DB_IDLE_TIMEOUT_MS = Convert.toInt(System.getenv("DB_IDLE_TIMEOUT_MS"), 120_000);
+
+    public static final long DB_SLOW_QUERY_THRESHOLD_MS = Convert.toLong(System.getenv("DB_SLOW_QUERY_THRESHOLD_MS"), 100L);
+
     public static final String LOG_PATH = APP_ROOT + File.separator + "logs";
 
     public static final String TELEGRAM_ROOT = APP_ROOT + File.separator + "account";
