@@ -24,6 +24,10 @@ public enum SettingKey {
     autoDownloadMaxWaitingLength(Convert::toInt, 30),
     autoDownloadScanCheckpoint(Function.identity(), "[]"),
     autoDownloadTimeLimited(value -> StrUtil.isBlank(value) ? null : new JsonObject(value).mapTo(SettingTimeLimitedDownload.class)),
+    autoDownload(value -> StrUtil.isBlank(value)
+            ? new telegram.files.ConfigurationService.AutoDownloadConfig()
+            : new telegram.files.ConfigurationService.AutoDownloadConfig(new JsonObject(value)),
+            new telegram.files.ConfigurationService.AutoDownloadConfig()),
     proxys(value -> StrUtil.isBlank(value) ? null : new JsonObject(value).mapTo(SettingProxyRecords.class)),
     /**
      * Interval for calculating average speed, in seconds

@@ -105,6 +105,70 @@ public class ConfigurationService {
         addDefinition(new ConfigDefinition("resource", "databasePoolSize", Integer.class, 20, 1, 200, "count", "Database connection pool size"));
     }
 
+    public static class AutoDownloadConfig {
+        public int historyScanInterval = 120_000;
+        public int downloadInterval = 10_000;
+        public int maxWaitingLength = 30;
+        public int maxConcurrentDownloads = 5;
+        public boolean enableAdaptiveThrottling = true;
+        public int retryAttempts = 3;
+        public int retryDelayMs = 5_000;
+
+        public AutoDownloadConfig() {
+        }
+
+        public AutoDownloadConfig(JsonObject json) {
+            if (json != null) {
+                this.historyScanInterval = json.getInteger("historyScanInterval", historyScanInterval);
+                this.downloadInterval = json.getInteger("downloadInterval", downloadInterval);
+                this.maxWaitingLength = json.getInteger("maxWaitingLength", maxWaitingLength);
+                this.maxConcurrentDownloads = json.getInteger("maxConcurrentDownloads", maxConcurrentDownloads);
+                this.enableAdaptiveThrottling = json.getBoolean("enableAdaptiveThrottling", enableAdaptiveThrottling);
+                this.retryAttempts = json.getInteger("retryAttempts", retryAttempts);
+                this.retryDelayMs = json.getInteger("retryDelayMs", retryDelayMs);
+            }
+        }
+
+        public int historyScanInterval() {
+            return historyScanInterval;
+        }
+
+        public int downloadInterval() {
+            return downloadInterval;
+        }
+
+        public int maxWaitingLength() {
+            return maxWaitingLength;
+        }
+
+        public int maxConcurrentDownloads() {
+            return maxConcurrentDownloads;
+        }
+
+        public boolean enableAdaptiveThrottling() {
+            return enableAdaptiveThrottling;
+        }
+
+        public int retryAttempts() {
+            return retryAttempts;
+        }
+
+        public int retryDelayMs() {
+            return retryDelayMs;
+        }
+
+        public JsonObject toJson() {
+            return new JsonObject()
+                    .put("historyScanInterval", historyScanInterval)
+                    .put("downloadInterval", downloadInterval)
+                    .put("maxWaitingLength", maxWaitingLength)
+                    .put("maxConcurrentDownloads", maxConcurrentDownloads)
+                    .put("enableAdaptiveThrottling", enableAdaptiveThrottling)
+                    .put("retryAttempts", retryAttempts)
+                    .put("retryDelayMs", retryDelayMs);
+        }
+    }
+
     private void addDefinition(ConfigDefinition definition) {
         definitions.put(definition.fullKey(), definition);
         cache.putIfAbsent(definition.fullKey(), definition.defaultValue);
