@@ -39,10 +39,6 @@ public class AutoDownloadVerticle extends AbstractVerticle {
 
     private static final int MAX_HISTORY_SCAN_TIME = 10 * 1000;
 
-    private static final int MAX_RETRIES = 3;
-
-    private static final long RETRY_DELAY = 5000;
-
     private static final List<String> DEFAULT_FILE_TYPE_ORDER = List.of("photo", "video", "audio", "file");
 
     // telegramId -> messages
@@ -70,6 +66,12 @@ public class AutoDownloadVerticle extends AbstractVerticle {
     private int downloadInterval;
 
     private int maxWaitingLength;
+
+    private boolean adaptiveThrottlingEnabled;
+
+    private int retryAttempts;
+
+    private long retryDelayMs;
 
     private SettingTimeLimitedDownload timeLimited;
 
@@ -186,57 +188,52 @@ public class AutoDownloadVerticle extends AbstractVerticle {
     }
 
     private Future<Void> initAutoDownload() {
-        return Future.all(
-                        DataVerticle.settingRepository.<Integer>getByKey(SettingKey.autoDownloadLimit),
-                        DataVerticle.settingRepository.<SettingTimeLimitedDownload>getByKey(SettingKey.autoDownloadTimeLimited),
-                        DataVerticle.settingRepository.<Integer>getByKey(SettingKey.autoDownloadHistoryScanInterval),
-                        DataVerticle.settingRepository.<Integer>getByKey(SettingKey.autoDownloadDownloadInterval),
-                        DataVerticle.settingRepository.<Integer>getByKey(SettingKey.autoDownloadMaxWaitingLength),
-                        DataVerticle.settingRepository.<Integer>getByKey(SettingKey.autoDownloadDefaultLimit)
-                )
-                .compose(results -> {
-                    this.defaultLimit = results.resultAt(5);
-                    this.limit = results.resultAt(0) == null ? defaultLimit : results.resultAt(0);
-                    this.historyScanInterval = results.resultAt(2);
-                    this.downloadInterval = results.resultAt(3);
-                    this.maxWaitingLength = results.resultAt(4);
-                    this.timeLimited = results.resultAt(1);
-                    adaptiveThrottler.reset(limit);
-                    return ScanCheckpoint.load(DataVerticle.settingRepository)
-                            .onSuccess(scanCheckpoints::putAll)
-                            .mapEmpty();
-                })
+        ConfigurationService configurationService = DataVerticle.configurationService;
+        this.historyScanInterval = configurationService.getValue("autoDownload", "historyScanInterval", Integer.class);
+        this.downloadInterval = configurationService.getValue("autoDownload", "downloadInterval", Integer.class);
+        this.maxWaitingLength = configurationService.getValue("autoDownload", "maxWaitingLength", Integer.class);
+        this.limit = configurationService.getValue("autoDownload", "maxConcurrentDownloads", Integer.class);
+        this.defaultLimit = this.limit;
+        this.adaptiveThrottlingEnabled = configurationService.getValue("autoDownload", "enableAdaptiveThrottling", Boolean.class);
+        this.retryAttempts = configurationService.getValue("autoDownload", "retryAttempts", Integer.class);
+        this.retryDelayMs = configurationService.getValue("autoDownload", "retryDelayMs", Long.class);
+        adaptiveThrottler.reset(limit);
+        return DataVerticle.settingRepository.<SettingTimeLimitedDownload>getByKey(SettingKey.autoDownloadTimeLimited)
+                .onSuccess(value -> this.timeLimited = value)
+                .compose(v -> ScanCheckpoint.load(DataVerticle.settingRepository)
+                        .onSuccess(scanCheckpoints::putAll)
+                        .mapEmpty())
                 .onFailure(e -> log.error("Get Auto download settings failed!", e));
     }
 
     private Future<Void> initEventConsumer() {
-        vertx.eventBus().consumer(EventEnum.SETTING_UPDATE.address(SettingKey.autoDownloadLimit.name()), message -> {
-            log.debug("Auto download limit update: %s".formatted(message.body()));
-            this.limit = Convert.toInt(message.body(), defaultLimit);
-            adaptiveThrottler.reset(limit);
+        vertx.eventBus().consumer(EventEnum.CONFIGURATION_CHANGE.address("autoDownload"), message -> {
+            JsonObject payload = (JsonObject) message.body();
+            String key = payload.getString("key");
+            Object value = payload.getValue("value");
+            switch (key) {
+                case "historyScanInterval" -> {
+                    this.historyScanInterval = Convert.toInt(value, historyScanInterval);
+                    restartHistoryScanTimer();
+                }
+                case "downloadInterval" -> {
+                    this.downloadInterval = Convert.toInt(value, downloadInterval);
+                    restartDownloadTimer();
+                }
+                case "maxWaitingLength" -> this.maxWaitingLength = Convert.toInt(value, maxWaitingLength);
+                case "maxConcurrentDownloads" -> {
+                    this.limit = Convert.toInt(value, limit);
+                    adaptiveThrottler.reset(limit);
+                }
+                case "enableAdaptiveThrottling" -> this.adaptiveThrottlingEnabled = Convert.toBool(value, adaptiveThrottlingEnabled);
+                case "retryAttempts" -> this.retryAttempts = Convert.toInt(value, retryAttempts);
+                case "retryDelayMs" -> this.retryDelayMs = Convert.toLong(value, retryDelayMs);
+                default -> log.debug("Ignored autoDownload config change for key {}", key);
+            }
         });
         vertx.eventBus().consumer(EventEnum.SETTING_UPDATE.address(SettingKey.autoDownloadTimeLimited.name()), message -> {
             log.debug("Auto download time limit update: %s".formatted(message.body()));
             this.timeLimited = (SettingTimeLimitedDownload) SettingKey.autoDownloadTimeLimited.converter.apply((String) message.body());
-        });
-        vertx.eventBus().consumer(EventEnum.SETTING_UPDATE.address(SettingKey.autoDownloadHistoryScanInterval.name()), message -> {
-            log.debug("Auto download history scan interval update: %s".formatted(message.body()));
-            this.historyScanInterval = Convert.toInt(message.body(), historyScanInterval);
-            restartHistoryScanTimer();
-        });
-        vertx.eventBus().consumer(EventEnum.SETTING_UPDATE.address(SettingKey.autoDownloadDownloadInterval.name()), message -> {
-            log.debug("Auto download download interval update: %s".formatted(message.body()));
-            this.downloadInterval = Convert.toInt(message.body(), downloadInterval);
-            restartDownloadTimer();
-        });
-        vertx.eventBus().consumer(EventEnum.SETTING_UPDATE.address(SettingKey.autoDownloadMaxWaitingLength.name()), message -> {
-            log.debug("Auto download max waiting length update: %s".formatted(message.body()));
-            this.maxWaitingLength = Convert.toInt(message.body(), maxWaitingLength);
-        });
-        vertx.eventBus().consumer(EventEnum.SETTING_UPDATE.address(SettingKey.autoDownloadDefaultLimit.name()), message -> {
-            log.debug("Auto download default limit update: %s".formatted(message.body()));
-            this.defaultLimit = Convert.toInt(message.body(), defaultLimit);
-            adaptiveThrottler.reset(limit == 0 ? defaultLimit : limit);
         });
         vertx.eventBus().consumer(EventEnum.MESSAGE_RECEIVED.address(), message -> {
             log.trace("Auto download message received: %s".formatted(message.body()));
@@ -465,6 +462,9 @@ public class AutoDownloadVerticle extends AbstractVerticle {
 
     private int getEffectiveLimit(long telegramId) {
         int configuredLimit = limit == 0 ? defaultLimit : limit;
+        if (!adaptiveThrottlingEnabled) {
+            return configuredLimit;
+        }
         if (telegramId == 0) {
             return adaptiveThrottler.getCurrentLimit(configuredLimit);
         }
@@ -624,7 +624,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                 .formatted(messageWrapper.message.chatId, messageWrapper.message.id, uniqueId), e);
         activeDownloads.remove(uniqueId);
         context.recordFailure(e);
-        if (context.getRetryCount() > MAX_RETRIES) {
+        if (context.getRetryCount() > retryAttempts) {
             retryContexts.remove(uniqueId);
             return;
         }
@@ -634,7 +634,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                 .put("uniqueId", uniqueId)
                 .put("retryCount", context.getRetryCount()));
 
-        long delay = RETRY_DELAY * (long) Math.pow(2, context.getRetryCount());
+        long delay = retryDelayMs * (long) Math.pow(2, context.getRetryCount());
         vertx.setTimer(delay, id -> {
             waitingDownloadMessages.computeIfAbsent(telegramId, key -> new PriorityQueue<>(MessageWrapper.PRIORITY_COMPARATOR))
                     .offer(messageWrapper);

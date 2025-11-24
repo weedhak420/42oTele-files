@@ -19,6 +19,7 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.jooq.lambda.tuple.Tuple;
 import telegram.files.repository.*;
+import telegram.files.repository.impl.ConfigurationHistoryRepositoryImpl;
 import telegram.files.repository.impl.FileRepositoryImpl;
 import telegram.files.repository.impl.SettingRepositoryImpl;
 import telegram.files.repository.impl.StatisticRepositoryImpl;
@@ -41,6 +42,10 @@ public class DataVerticle extends AbstractVerticle {
     public static SettingRepository settingRepository;
 
     public static StatisticRepository statisticRepository;
+
+    public static ConfigurationService configurationService;
+
+    public static ConfigurationHistoryRepository configurationHistoryRepository;
     private static HikariDataSource hikariDataSource;
     private static DatabaseMaintenanceService databaseMaintenanceService;
 
@@ -64,7 +69,8 @@ public class DataVerticle extends AbstractVerticle {
                 new SchemaVersionRecord.SchemaVersionDefinition(),
                 new TelegramRecord.TelegramRecordDefinition(),
                 new FileRecord.FileRecordDefinition(),
-                new StatisticRecord.StatisticRecordDefinition()
+                new StatisticRecord.StatisticRecordDefinition(),
+                new ConfigurationHistoryRecord.ConfigurationHistoryDefinition()
         );
     }
 
@@ -74,6 +80,8 @@ public class DataVerticle extends AbstractVerticle {
         telegramRepository = new TelegramRepositoryImpl(pool);
         fileRepository = new FileRepositoryImpl(pool);
         statisticRepository = new StatisticRepositoryImpl(pool);
+        configurationHistoryRepository = new ConfigurationHistoryRepositoryImpl(pool);
+        configurationService = new ConfigurationService(vertx, settingRepository, configurationHistoryRepository);
         statisticRepository.startBufferedWriter(vertx);
         databaseMaintenanceService = new DatabaseMaintenanceService(pool, fileRepository, vertx);
         isCompletelyNewInitialization()
@@ -88,6 +96,7 @@ public class DataVerticle extends AbstractVerticle {
                 .compose(r -> MigrationManager.applyMigrations(pool))
                 .compose(r ->
                         settingRepository.createOrUpdate(SettingKey.version.name(), Start.VERSION))
+                .compose(r -> configurationService.init())
                 .onSuccess(r -> {
                     log.info("Database {} initialized.", Config.DB_TYPE);
                     databaseMaintenanceService.start();

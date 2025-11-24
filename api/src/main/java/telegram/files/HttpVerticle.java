@@ -166,6 +166,17 @@ public class HttpVerticle extends AbstractVerticle {
         router.get("/api/metrics/recommendations").handler(this::handleRecommendations);
         router.get("/api/alerts").handler(this::handleAlerts);
 
+        router.get("/api/config").handler(this::handleConfig);
+        router.get("/api/config/schema").handler(this::handleConfigSchema);
+        router.get("/api/config/history").handler(this::handleConfigHistory);
+        router.get("/api/config/export").handler(this::handleConfigExport);
+        router.get("/api/config/:category").handler(this::handleConfigCategory);
+        router.put("/api/config/:category/:key").handler(this::handleConfigUpdate);
+        router.post("/api/config/reset").handler(this::handleConfigReset);
+        router.post("/api/config/import").handler(this::handleConfigImport);
+        router.post("/api/config/profile/:name").handler(this::handleConfigProfile);
+        router.post("/api/config/rollback").handler(this::handleConfigRollback);
+
         router.get("/:telegramId/file/:uniqueId").handler(this::handleFilePreview);
         router.post("/:telegramId/file/start-download").handler(this::handleFileStartDownload);
         router.post("/:telegramId/file/cancel-download").handler(this::handleFileCancelDownload);
@@ -818,6 +829,92 @@ public class HttpVerticle extends AbstractVerticle {
 
     private void handleAlerts(RoutingContext ctx) {
         requestMetrics(PerformanceMonitorVerticle.ALERTS_QUERY_ADDRESS, ctx);
+    }
+
+    private String resolveUser(RoutingContext ctx) {
+        return StrUtil.blankToDefault(ctx.request().getHeader("X-User"), "system");
+    }
+
+    private void handleConfig(RoutingContext ctx) {
+        ctx.json(DataVerticle.configurationService.getAll());
+    }
+
+    private void handleConfigCategory(RoutingContext ctx) {
+        String category = ctx.pathParam("category");
+        ctx.json(DataVerticle.configurationService.getCategory(category));
+    }
+
+    private void handleConfigUpdate(RoutingContext ctx) {
+        String category = ctx.pathParam("category");
+        String key = ctx.pathParam("key");
+        JsonObject body = ctx.body().asJsonObject();
+        Object value = body == null ? null : body.getValue("value");
+        DataVerticle.configurationService.update(category, key, value, resolveUser(ctx))
+                .onSuccess(ctx::json)
+                .onFailure(ctx::fail);
+    }
+
+    private void handleConfigReset(RoutingContext ctx) {
+        DataVerticle.configurationService.reset(resolveUser(ctx))
+                .onSuccess(v -> ctx.json(new JsonObject().put("status", "reset")))
+                .onFailure(ctx::fail);
+    }
+
+    private void handleConfigSchema(RoutingContext ctx) {
+        ctx.json(DataVerticle.configurationService.getSchema());
+    }
+
+    private void handleConfigHistory(RoutingContext ctx) {
+        int limit = Convert.toInt(ctx.request().getParam("limit"), 100);
+        DataVerticle.configurationService.getHistory(limit)
+                .onSuccess(ctx::json)
+                .onFailure(ctx::fail);
+    }
+
+    private void handleConfigExport(RoutingContext ctx) {
+        Set<String> categories = CollUtil.newHashSet(Optional.ofNullable(ctx.request().getParam("categories"))
+                .map(str -> StrUtil.split(str, ","))
+                .orElse(List.of()));
+        DataVerticle.configurationService.exportConfig(categories)
+                .onSuccess(ctx::json)
+                .onFailure(ctx::fail);
+    }
+
+    private void handleConfigImport(RoutingContext ctx) {
+        JsonObject body = ctx.body().asJsonObject();
+        Set<String> categories = CollUtil.newHashSet(Optional.ofNullable(ctx.request().getParam("categories"))
+                .map(str -> StrUtil.split(str, ","))
+                .orElse(List.of()));
+        DataVerticle.configurationService.importConfig(body, categories, resolveUser(ctx))
+                .onSuccess(v -> ctx.json(new JsonObject().put("status", "imported")))
+                .onFailure(ctx::fail);
+    }
+
+    private void handleConfigProfile(RoutingContext ctx) {
+        String name = ctx.pathParam("name");
+        JsonObject body = ctx.body().asJsonObject();
+        Future<Void> operation;
+        if (body != null && !body.isEmpty()) {
+            operation = DataVerticle.configurationService.saveProfile(name, body, resolveUser(ctx))
+                    .compose(v -> DataVerticle.configurationService.applyProfile(name, resolveUser(ctx)));
+        } else {
+            operation = DataVerticle.configurationService.applyProfile(name, resolveUser(ctx));
+        }
+        operation.onSuccess(v -> ctx.json(new JsonObject().put("status", "applied")))
+                .onFailure(ctx::fail);
+    }
+
+    private void handleConfigRollback(RoutingContext ctx) {
+        JsonObject body = ctx.body().asJsonObject();
+        if (body == null || StrUtil.isBlank(body.getString("category")) || StrUtil.isBlank(body.getString("key"))) {
+            ctx.fail(400);
+            return;
+        }
+        String category = body.getString("category");
+        String key = body.getString("key");
+        DataVerticle.configurationService.rollback(category, key, resolveUser(ctx))
+                .onSuccess(ctx::json)
+                .onFailure(ctx::fail);
     }
 
     private void requestMetrics(String address, RoutingContext ctx) {

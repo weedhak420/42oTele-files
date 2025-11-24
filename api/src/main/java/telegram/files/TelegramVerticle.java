@@ -67,7 +67,23 @@ public class TelegramVerticle extends AbstractVerticle {
 
     private LoadingCache<Long, TdApi.Chat> chatCache;
 
-    private static final long KEEP_ALIVE_INTERVAL = 300_000L;
+    private long keepAliveInterval;
+
+    private int connectionTimeoutMs;
+
+    private int networkMaxRetries;
+
+    private double backoffMultiplier;
+
+    private boolean enableCaching;
+
+    private int cacheSize;
+
+    private int cacheExpirationMinutes;
+
+    private boolean enableMetrics;
+
+    private int batchSize;
 
     public TelegramVerticle(String rootPath) {
         this.rootPath = rootPath;
@@ -94,10 +110,28 @@ public class TelegramVerticle extends AbstractVerticle {
         this.proxyName = proxyName;
     }
 
+    private void loadConfiguration() {
+        ConfigurationService configurationService = DataVerticle.configurationService;
+        this.enableCaching = configurationService.getValue("performance", "enableCaching", Boolean.class);
+        this.cacheSize = configurationService.getValue("performance", "cacheSize", Integer.class);
+        this.cacheExpirationMinutes = configurationService.getValue("performance", "cacheExpirationMinutes", Integer.class);
+        this.batchSize = configurationService.getValue("performance", "batchSize", Integer.class);
+        this.enableMetrics = configurationService.getValue("performance", "enableMetrics", Boolean.class);
+
+        this.connectionTimeoutMs = configurationService.getValue("network", "connectionTimeout", Integer.class);
+        this.keepAliveInterval = configurationService.getValue("network", "keepAliveInterval", Long.class);
+        this.networkMaxRetries = configurationService.getValue("network", "maxRetries", Integer.class);
+        this.backoffMultiplier = configurationService.getValue("network", "backoffMultiplier", Double.class);
+    }
+
     private void initChatCache() {
+        if (!enableCaching) {
+            chatCache = null;
+            return;
+        }
         chatCache = CacheBuilder.newBuilder()
-                .maximumSize(1_000)
-                .expireAfterWrite(5, TimeUnit.MINUTES)
+                .maximumSize(cacheSize)
+                .expireAfterWrite(cacheExpirationMinutes, TimeUnit.MINUTES)
                 .build(new CacheLoader<>() {
                     @Override
                     public TdApi.Chat load(Long chatId) throws Exception {
@@ -137,8 +171,8 @@ public class TelegramVerticle extends AbstractVerticle {
         if (keepAliveTimerId != 0) {
             vertx.cancelTimer(keepAliveTimerId);
         }
-        keepAliveTimerId = vertx.setPeriodic(KEEP_ALIVE_INTERVAL, id -> {
-            if (System.currentTimeMillis() - lastActivityTime > KEEP_ALIVE_INTERVAL) {
+        keepAliveTimerId = vertx.setPeriodic(keepAliveInterval, id -> {
+            if (System.currentTimeMillis() - lastActivityTime > keepAliveInterval) {
                 executeWithContext(new TdApi.GetMe(), "keepAlive", null, null, null)
                         .onSuccess(r -> log.trace("[%s] keep-alive ping succeeded".formatted(getRootId())))
                         .onFailure(err -> log.warn("[%s] keep-alive ping failed: %s".formatted(getRootId(), err.getMessage())));
@@ -150,6 +184,7 @@ public class TelegramVerticle extends AbstractVerticle {
     public void start(Promise<Void> startPromise) {
         client = new TelegramClient();
         telegramChats = new TelegramChats(client);
+        loadConfiguration();
         lastActivityTime = System.currentTimeMillis();
         initChatCache();
         TelegramUpdateHandler telegramUpdateHandler = new TelegramUpdateHandler();
@@ -238,6 +273,9 @@ public class TelegramVerticle extends AbstractVerticle {
     }
 
     public TdApi.Chat getChat(long chatId) {
+        if (chatCache == null) {
+            return telegramChats.getChat(chatId);
+        }
         try {
             TdApi.Chat cached = chatCache.getIfPresent(chatId);
             if (cached != null) {
@@ -430,15 +468,16 @@ public class TelegramVerticle extends AbstractVerticle {
     }
 
     private int calculateBatchLimit() {
+        int configuredBatch = Math.max(1, batchSize);
         long avgBytesPerSecond = avgSpeed.getSpeedStats().avgSpeed();
         double mbPerSecond = avgBytesPerSecond / (1024d * 1024d);
         if (mbPerSecond > 5) {
-            return 20;
+            return Math.min(configuredBatch, 20);
         }
         if (mbPerSecond > 1) {
-            return 10;
+            return Math.min(configuredBatch, 10);
         }
-        return 5;
+        return Math.min(configuredBatch, 5);
     }
 
     public Future<Boolean> downloadThumbnail(Long chatId, Long messageId, FileRecord thumbnailRecord) {
@@ -758,6 +797,9 @@ public class TelegramVerticle extends AbstractVerticle {
     }
 
     private void publishMetricUpdate(JsonObject payload) {
+        if (!enableMetrics) {
+            return;
+        }
         if (payload == null) {
             return;
         }
@@ -849,6 +891,45 @@ public class TelegramVerticle extends AbstractVerticle {
             this.initAvgSpeed();
         });
 
+        vertx.eventBus().consumer(EventEnum.CONFIGURATION_CHANGE.address("network"), message -> {
+            JsonObject payload = (JsonObject) message.body();
+            String key = payload.getString("key");
+            Object value = payload.getValue("value");
+            switch (key) {
+                case "connectionTimeout" -> this.connectionTimeoutMs = Convert.toInt(value, connectionTimeoutMs);
+                case "keepAliveInterval" -> {
+                    this.keepAliveInterval = Convert.toLong(value, keepAliveInterval);
+                    setupKeepAlive();
+                }
+                case "maxRetries" -> this.networkMaxRetries = Convert.toInt(value, networkMaxRetries);
+                case "backoffMultiplier" -> this.backoffMultiplier = Convert.toDouble(value, backoffMultiplier);
+                default -> log.trace("Ignoring network config key {}", key);
+            }
+        });
+
+        vertx.eventBus().consumer(EventEnum.CONFIGURATION_CHANGE.address("performance"), message -> {
+            JsonObject payload = (JsonObject) message.body();
+            String key = payload.getString("key");
+            Object value = payload.getValue("value");
+            switch (key) {
+                case "enableCaching" -> {
+                    this.enableCaching = Convert.toBool(value, enableCaching);
+                    initChatCache();
+                }
+                case "cacheSize" -> {
+                    this.cacheSize = Convert.toInt(value, cacheSize);
+                    initChatCache();
+                }
+                case "cacheExpirationMinutes" -> {
+                    this.cacheExpirationMinutes = Convert.toInt(value, cacheExpirationMinutes);
+                    initChatCache();
+                }
+                case "enableMetrics" -> this.enableMetrics = Convert.toBool(value, enableMetrics);
+                case "batchSize" -> this.batchSize = Convert.toInt(value, batchSize);
+                default -> log.trace("Ignoring performance config key {}", key);
+            }
+        });
+
         return Future.succeededFuture();
     }
 
@@ -870,28 +951,32 @@ public class TelegramVerticle extends AbstractVerticle {
         Promise<R> promise = Promise.promise();
         long start = System.currentTimeMillis();
         lastActivityTime = start;
-        Future<R> execution = ignoreException ? client.execute(request, true) : client.execute(request);
+        Future<R> execution = ignoreException ? client.execute(request, true) : client.execute(request, connectionTimeoutMs, vertx);
         execution.onSuccess(result -> {
                     lastActivityTime = System.currentTimeMillis();
-                    recordApiMetrics(operation, System.currentTimeMillis() - start, true);
-                    publishMetricUpdate(new JsonObject()
-                            .put("type", "apiCall")
-                            .put("operation", operation)
-                            .put("durationMs", System.currentTimeMillis() - start)
-                            .put("success", true));
+                    if (enableMetrics) {
+                        recordApiMetrics(operation, System.currentTimeMillis() - start, true);
+                        publishMetricUpdate(new JsonObject()
+                                .put("type", "apiCall")
+                                .put("operation", operation)
+                                .put("durationMs", System.currentTimeMillis() - start)
+                                .put("success", true));
+                    }
                     promise.complete(result);
                 })
                 .onFailure(err -> {
                     lastActivityTime = System.currentTimeMillis();
                     logErrorContext(operation, chatId, messageId, fileId, err);
-                    recordApiMetrics(operation, System.currentTimeMillis() - start, false);
-                    publishMetricUpdate(new JsonObject()
-                            .put("type", "apiCall")
-                            .put("operation", operation)
-                            .put("durationMs", System.currentTimeMillis() - start)
-                            .put("success", false));
-                    if (isTransientError(err) && retryCount < 3) {
-                        long delay = (long) Math.pow(2, retryCount) * 500L;
+                    if (enableMetrics) {
+                        recordApiMetrics(operation, System.currentTimeMillis() - start, false);
+                        publishMetricUpdate(new JsonObject()
+                                .put("type", "apiCall")
+                                .put("operation", operation)
+                                .put("durationMs", System.currentTimeMillis() - start)
+                                .put("success", false));
+                    }
+                    if (isTransientError(err) && retryCount < networkMaxRetries) {
+                        long delay = (long) Math.pow(backoffMultiplier, retryCount) * 500L;
                         vertx.setTimer(delay, id -> executeWithContext(request, operation, chatId, messageId, fileId, ignoreException, retryCount + 1)
                                 .onComplete(promise));
                     } else {
@@ -920,6 +1005,9 @@ public class TelegramVerticle extends AbstractVerticle {
     }
 
     private void recordApiMetrics(String operation, long durationMs, boolean success) {
+        if (!enableMetrics) {
+            return;
+        }
         if (telegramRecord == null) {
             return;
         }
@@ -938,6 +1026,9 @@ public class TelegramVerticle extends AbstractVerticle {
     }
 
     private void recordDownloadOutcome(String uniqueId, boolean success, String reason) {
+        if (!enableMetrics) {
+            return;
+        }
         if (telegramRecord == null) {
             return;
         }
