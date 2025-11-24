@@ -72,6 +72,7 @@ public class ConfigurationService {
                     });
                     return Future.<Void>succeededFuture();
                 })
+                // Ensure the initialization chain returns Future<Void> before attaching failure handlers
                 .mapEmpty()
                 .onFailure(err -> log.error("Failed to initialize configuration service: {}", err.getMessage()));
     }

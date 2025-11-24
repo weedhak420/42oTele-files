@@ -31,6 +31,7 @@ public class ConfigurationHistoryRepositoryImpl extends AbstractSqlRepository im
                         """)
                 .mapFrom(ConfigurationHistoryRecord.PARAM_MAPPER)
                 .execute(record)
+                // Normalize to a void future before failure handling
                 .mapEmpty()
                 .onSuccess(r -> log.trace("Added configuration history for %s/%s".formatted(record.category(), record.key())))
                 .onFailure(err -> log.error("Failed to add configuration history: %s".formatted(err.getMessage())));
