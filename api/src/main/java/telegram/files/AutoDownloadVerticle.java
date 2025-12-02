@@ -801,6 +801,12 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                 .formatted(messageWrapper.message().chatId, messageWrapper.message().id, uniqueId), e);
         activeDownloads.remove(uniqueId);
         context.recordFailure(e);
+        if (isPermanentMessageFailure(e)) {
+            markPermanentFailure(uniqueId, messageWrapper.message());
+            retryContexts.remove(uniqueId);
+            publishQueueSize(telegramId, waitingDownloadMessages.getOrDefault(telegramId, new ConcurrentLinkedQueue<>()).size());
+            return;
+        }
         if (!context.shouldRetry(downloadRetryAttempts)) {
             retryContexts.remove(uniqueId);
             return;
@@ -819,6 +825,34 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                     .getOrDefault(telegramId, new ConcurrentLinkedQueue<>())
                     .size());
         });
+    }
+
+    private boolean isPermanentMessageFailure(Throwable e) {
+        if (e == null || e.getMessage() == null) {
+            return false;
+        }
+        String msg = e.getMessage();
+        return msg.contains("Not Found")
+                || msg.contains("MSG_ID_INVALID")
+                || msg.contains("message to be replied not found");
+    }
+
+    private void markPermanentFailure(String uniqueId, TdApi.Message message) {
+        DataVerticle.fileRepository.getByUniqueId(uniqueId)
+                .compose(record -> {
+                    if (record == null) {
+                        return Future.succeededFuture();
+                    }
+                    return DataVerticle.fileRepository.updateDownloadStatus(
+                                    record.id(),
+                                    uniqueId,
+                                    record.localPath(),
+                                    FileRecord.DownloadStatus.permanently_failed,
+                                    System.currentTimeMillis())
+                            .mapEmpty();
+                })
+                .onFailure(err -> log.error("Failed to mark message permanently failed. ChatId:{} MessageId:{} UniqueId:{}", message.chatId, message.id, uniqueId, err))
+                .onSuccess(v -> log.warn("Message permanently unavailable, marked failed. ChatId:{} MessageId:{} UniqueId:{}", message.chatId, message.id, uniqueId));
     }
 
     private void onNewMessage(JsonObject jsonObject) {

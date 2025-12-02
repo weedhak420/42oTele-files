@@ -40,7 +40,13 @@ public record FileRecord(int id, //file id will change
 ) {
 
     public enum DownloadStatus {
-        idle, downloading, paused, completed, error
+        idle,
+        downloading,
+        paused,
+        completed,
+        error,
+        permanently_failed,
+        completed_but_update_failed
     }
 
     public enum TransferStatus {

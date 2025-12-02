@@ -1195,6 +1195,10 @@ public class TelegramVerticle extends AbstractVerticle {
                 .getByUniqueId(file.remote.uniqueId)
                 .compose(fileRecord -> {
                     if (fileRecord != null) {
+                        if (fileRecord.isDownloadStatus(FileRecord.DownloadStatus.completed)
+                                || fileRecord.isDownloadStatus(FileRecord.DownloadStatus.completed_but_update_failed)) {
+                            return Future.succeededFuture(JsonObject.of("downloadStatus", fileRecord.downloadStatus()));
+                        }
                         return DataVerticle.fileRepository.updateDownloadStatus(
                                 file.id,
                                 file.remote.uniqueId,
@@ -1222,13 +1226,21 @@ public class TelegramVerticle extends AbstractVerticle {
                                     System.currentTimeMillis()
                             ));
                 })
-                .compose(r -> {
-                    sendFileStatusHttpEvent(file, r);
-                    if (r == null || r.isEmpty()) {
-                        return Future.failedFuture("File is downloaded completed, but update status failed");
-                    } else {
-                        return Future.failedFuture("File is already downloaded successfully");
-                    }
+                .recover(err -> {
+                    log.error("[%s] Failed to update completed file status, marking for manual recovery: %s"
+                            .formatted(getRootId(), err.getMessage()), err);
+                    return DataVerticle.fileRepository.updateDownloadStatus(
+                                    file.id,
+                                    file.remote.uniqueId,
+                                    file.local.path,
+                                    FileRecord.DownloadStatus.completed_but_update_failed,
+                                    System.currentTimeMillis())
+                            .onFailure(fallback -> log.error("[%s] Failed to mark completed file for recovery: %s"
+                                    .formatted(getRootId(), fallback.getMessage()), fallback));
+                })
+                .map(update -> {
+                    sendFileStatusHttpEvent(file, update);
+                    return null;
                 });
     }
 }

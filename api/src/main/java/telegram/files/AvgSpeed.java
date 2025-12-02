@@ -5,13 +5,13 @@ import io.vertx.core.json.JsonObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.stream.Collectors;
 
 public class AvgSpeed {
     private final int interval;
 
-    private final TreeMap<Long, SpeedPoint> speedPoints;
+    private final ConcurrentSkipListMap<Long, SpeedPoint> speedPoints;
 
     private final int smoothingWindowSize;
 
@@ -31,7 +31,7 @@ public class AvgSpeed {
 
     public AvgSpeed(int interval, int smoothingWindowSize) {
         this.interval = interval;
-        this.speedPoints = new TreeMap<>();
+        this.speedPoints = new ConcurrentSkipListMap<>();
         this.smoothingWindowSize = smoothingWindowSize;
     }
 
