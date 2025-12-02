@@ -51,6 +51,18 @@ public class MigrationManager {
                             "DROP INDEX IF EXISTS idx_file_status;",
                             "DROP INDEX IF EXISTS idx_file_cleanup;"
                     }
+            ),
+            new MigrationScript(
+                    "0.2.8-download-queue-coverage",
+                    "Add covering index and vacuum/analyze for download queue",
+                    new String[]{
+                            "CREATE INDEX IF NOT EXISTS idx_file_download_queue ON file_record(chat_id, download_status, type, message_id) WHERE download_status = 'idle' AND type != 'thumbnail';",
+                            "VACUUM;",
+                            "ANALYZE file_record;"
+                    },
+                    new String[]{
+                            "DROP INDEX IF EXISTS idx_file_download_queue;"
+                    }
             )
     );
 
