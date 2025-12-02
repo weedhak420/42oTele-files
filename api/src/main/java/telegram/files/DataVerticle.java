@@ -15,6 +15,7 @@ import io.vertx.sqlclient.Pool;
 import io.vertx.sqlclient.PoolOptions;
 import io.vertx.sqlclient.SqlClient;
 import io.vertx.sqlclient.SqlConnectOptions;
+import io.vertx.sqlclient.templates.SqlTemplate;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.jooq.lambda.tuple.Tuple;
@@ -27,7 +28,9 @@ import telegram.files.repository.impl.TelegramRepositoryImpl;
 import telegram.files.repository.migration.MigrationManager;
 
 import java.io.File;
+import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 public class DataVerticle extends AbstractVerticle {
 
@@ -95,6 +98,7 @@ public class DataVerticle extends AbstractVerticle {
                 })
                 .compose(r -> MigrationManager.applyMigrations(pool))
                 .compose(r -> optimizeTables())
+                .compose(r -> cleanupOrphanedDownloads())
                 .compose(r ->
                         settingRepository.createOrUpdate(SettingKey.version.name(), Start.VERSION))
                 .compose(r -> configurationService.init())
@@ -158,6 +162,30 @@ public class DataVerticle extends AbstractVerticle {
         }
 
         return createPool(vertx, sqlConnectOptions, poolOptions);
+    }
+
+    private Future<Void> cleanupOrphanedDownloads() {
+        long cutoff = System.currentTimeMillis() - Duration.ofMinutes(5).toMillis();
+        String sql = """
+                UPDATE file_record
+                SET download_status = 'idle',
+                    downloaded_size = 0,
+                    local_path = NULL,
+                    start_date = NULL,
+                    completion_date = NULL
+                WHERE download_status = 'downloading'
+                  AND start_date IS NOT NULL
+                  AND start_date < #{cutoff}
+                """;
+        Map<String, Object> params = Map.of("cutoff", cutoff);
+        return SqlTemplate.forUpdate(pool, sql)
+                .execute(params)
+                .onSuccess(rows -> {
+                    if (rows != null && rows.rowCount() > 0) {
+                        log.warn("Cleaned up {} orphaned downloads", rows.rowCount());
+                    }
+                })
+                .mapEmpty();
     }
 
     private Future<Void> optimizeTables() {

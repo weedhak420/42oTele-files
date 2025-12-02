@@ -16,6 +16,8 @@ import telegram.files.repository.FileRecord;
 import telegram.files.repository.SettingAutoRecords;
 import telegram.files.repository.SettingKey;
 import telegram.files.repository.SettingTimeLimitedDownload;
+import telegram.files.TelegramVerticle;
+import telegram.files.TelegramVerticles;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -25,6 +27,7 @@ import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -177,7 +180,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         if (stuckDownloadTimerId != 0) {
             vertx.cancelTimer(stuckDownloadTimerId);
         }
-        stuckDownloadTimerId = vertx.setPeriodic(Duration.ofMinutes(5).toMillis(), id -> checkStuckDownloads());
+        stuckDownloadTimerId = vertx.setPeriodic(Duration.ofMinutes(1).toMillis(), id -> checkStuckDownloads());
     }
 
     private void runHistoryScan() {
@@ -230,26 +233,46 @@ public class AutoDownloadVerticle extends AbstractVerticle {
     }
 
     private void checkStuckDownloads() {
-        long cutoffTime = System.currentTimeMillis() - downloadTimeoutMs;
+        long now = System.currentTimeMillis();
+        long hardTimeout = downloadTimeoutMs <= 0 ? Duration.ofMinutes(30).toMillis() : downloadTimeoutMs;
+        long softTimeout = Duration.ofMinutes(5).toMillis();
         DataVerticle.fileRepository.getDownloadingFiles()
-                .onSuccess(files -> files.stream()
-                        .filter(file -> file.startDate() > 0 && file.startDate() < cutoffTime)
-                        .forEach(file -> {
-                            log.warn("Detected stuck download: %s (started %d min ago)".formatted(
-                                    file.fileName(),
-                                    (System.currentTimeMillis() - file.startDate()) / 60000));
-                            DataVerticle.fileRepository.updateDownloadStatus(
-                                            file.id(),
-                                            file.uniqueId(),
-                                            null,
-                                            FileRecord.DownloadStatus.idle,
-                                            null)
-                                    .onSuccess(v -> {
-                                        activeDownloads.remove(file.uniqueId());
-                                        retryContexts.remove(file.uniqueId());
-                                        log.info("Reset stuck download: %s".formatted(file.fileName()));
-                                    });
-                        }));
+                .onSuccess(files -> files.forEach(file -> {
+                    long startDate = file.startDate();
+                    if (startDate <= 0) {
+                        return;
+                    }
+                    long stuckDuration = now - startDate;
+                    boolean isHardStuck = stuckDuration > hardTimeout;
+                    boolean isSoftStuck = file.size() < 50_000_000L && stuckDuration > softTimeout;
+                    if (isHardStuck || isSoftStuck) {
+                        String reason = isHardStuck ? "hard timeout (30min)" : "soft timeout (5min, file < 50MB)";
+                        log.warn("Detected stuck download: %s (%s, stuck %d min)".formatted(
+                                file.fileName(), reason, stuckDuration / 60000));
+                        resetStuckDownload(file, reason);
+                    }
+                }));
+    }
+
+    private void resetStuckDownload(FileRecord file, String reason) {
+        Optional<TelegramVerticle> telegram = TelegramVerticles.get(file.telegramId());
+        Future<Void> cancelFuture = telegram
+                .map(t -> t.stopDownloadOnly(file.id(), file.uniqueId())
+                        .onFailure(err -> log.warn("Failed to cancel stuck download for {}: {}", file.uniqueId(), err.getMessage())))
+                .orElse(Future.succeededFuture());
+
+        cancelFuture.compose(v -> DataVerticle.fileRepository.updateDownloadStatus(
+                        file.id(),
+                        file.uniqueId(),
+                        null,
+                        FileRecord.DownloadStatus.idle,
+                        null))
+                .onSuccess(v -> {
+                    activeDownloads.remove(file.uniqueId());
+                    retryContexts.remove(file.uniqueId());
+                    log.info("Reset stuck download: {} ({})", file.fileName(), reason);
+                })
+                .onFailure(err -> log.error("Failed to reset stuck download {}: {}", file.uniqueId(), err.getMessage()));
     }
 
     private Future<Void> initAutoDownload() {

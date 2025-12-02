@@ -57,6 +57,9 @@ public class TelegramVerticle extends AbstractVerticle {
     public TelegramRecord telegramRecord;
 
     private AvgSpeed avgSpeed = new AvgSpeed();
+    private final Map<Integer, DownloadProgress> downloadProgress = new ConcurrentHashMap<>();
+    private static final int NO_PROGRESS_THRESHOLD = 3;
+    private static final long NO_PROGRESS_INTERVAL_MS = 10_000;
 
     private long avgSpeedPersistenceTimerId;
 
@@ -153,6 +156,12 @@ public class TelegramVerticle extends AbstractVerticle {
                 .onSuccess(promise::complete)
                 .onFailure(promise::fail);
         return promise.future().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+    }
+
+    private static class DownloadProgress {
+        private long lastUpdateTime = System.currentTimeMillis();
+        private long lastDownloadedSize;
+        private int noProgressCount;
     }
 
     private Future<Void> deleteFileAsync(String path) {
@@ -546,6 +555,12 @@ public class TelegramVerticle extends AbstractVerticle {
                                 .put("uniqueId", file.remote.uniqueId)
                                 .put("downloadStatus", FileRecord.DownloadStatus.idle)
                         )))
+                .mapEmpty();
+    }
+
+    public Future<Void> stopDownloadOnly(Integer fileId, String uniqueId) {
+        return executeWithContext(new TdApi.CancelDownloadFile(fileId, false), "cancelDownload", null, null, fileId)
+                .onFailure(err -> log.warn("[%s] Failed to cancel download for %s: %s".formatted(getRootId(), uniqueId, err.getMessage())))
                 .mapEmpty();
     }
 
@@ -1129,6 +1144,9 @@ public class TelegramVerticle extends AbstractVerticle {
         log.trace("📃[%s] Receive file update: %s".formatted(getRootId(), updateFile));
         TdApi.File file = updateFile.file;
         if (file != null) {
+            if (file.local != null && file.local.isDownloadingActive) {
+                trackDownloadProgress(file);
+            }
             String localPath = null;
             Long completionDate = null;
             if (file.local != null && file.local.isDownloadingCompleted) {
@@ -1165,6 +1183,46 @@ public class TelegramVerticle extends AbstractVerticle {
                 sendEvent(EventPayload.build(EventPayload.TYPE_FILE, updateFile));
                 lastFileEventTime = System.currentTimeMillis();
             }
+        }
+    }
+
+    private void trackDownloadProgress(TdApi.File file) {
+        DownloadProgress progress = downloadProgress.computeIfAbsent(file.id, key -> {
+            DownloadProgress dp = new DownloadProgress();
+            dp.lastDownloadedSize = file.local.downloadedSize;
+            return dp;
+        });
+
+        long now = System.currentTimeMillis();
+        long currentSize = file.local.downloadedSize;
+        if (currentSize == progress.lastDownloadedSize) {
+            if (now - progress.lastUpdateTime >= NO_PROGRESS_INTERVAL_MS) {
+                progress.noProgressCount++;
+                progress.lastUpdateTime = now;
+            }
+            if (progress.noProgressCount >= NO_PROGRESS_THRESHOLD) {
+                log.warn("[%s] Download stalled (no progress), canceling fileId=%d".formatted(getRootId(), file.id));
+                executeWithContext(new TdApi.CancelDownloadFile(file.id, false), "cancelStalledDownload", null, null, file.id)
+                        .compose(v -> DataVerticle.fileRepository.updateDownloadStatus(
+                                file.id,
+                                file.remote.uniqueId,
+                                null,
+                                FileRecord.DownloadStatus.idle,
+                                null))
+                        .onFailure(err -> log.error("[%s] Failed to reset stalled download %s: %s".formatted(
+                                getRootId(), file.remote.uniqueId, err.getMessage())))
+                        .onSuccess(v -> log.info("[%s] Reset stalled download %s".formatted(getRootId(), file.remote.uniqueId)));
+                downloadProgress.remove(file.id);
+                return;
+            }
+        } else {
+            progress.noProgressCount = 0;
+            progress.lastDownloadedSize = currentSize;
+            progress.lastUpdateTime = now;
+        }
+
+        if (file.local != null && file.local.isDownloadingCompleted) {
+            downloadProgress.remove(file.id);
         }
     }
 
