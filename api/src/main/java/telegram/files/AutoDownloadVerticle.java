@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -699,15 +700,15 @@ public class AutoDownloadVerticle extends AbstractVerticle {
             return false;
         }
         List<String> uniqueIds = TdApiHelp.getFileUniqueIds(messages);
-        Set<String> permanentlyFailed = Collections.emptySet();
+        Set<String> permanentlyFailed = new HashSet<>();
         if (CollUtil.isNotEmpty(uniqueIds)) {
             try {
                 Map<String, FileRecord> existing = Future.await(DataVerticle.fileRepository.getFilesByUniqueId(uniqueIds));
-                permanentlyFailed = existing.entrySet().stream()
+                permanentlyFailed.addAll(existing.entrySet().stream()
                         .filter(entry -> entry.getValue() != null
                                 && entry.getValue().isDownloadStatus(FileRecord.DownloadStatus.permanently_failed))
                         .map(Map.Entry::getKey)
-                        .collect(Collectors.toSet());
+                        .collect(Collectors.toSet()));
             } catch (Exception e) {
                 log.warn("Failed to check permanently failed files before queuing: {}", e.getMessage());
             }
