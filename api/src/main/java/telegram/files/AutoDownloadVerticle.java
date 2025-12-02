@@ -24,6 +24,7 @@ import java.time.Instant;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +34,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class AutoDownloadVerticle extends AbstractVerticle {
@@ -696,6 +698,20 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         if (CollUtil.isEmpty(messages)) {
             return false;
         }
+        List<String> uniqueIds = TdApiHelp.getFileUniqueIds(messages);
+        Set<String> permanentlyFailed = Collections.emptySet();
+        if (CollUtil.isNotEmpty(uniqueIds)) {
+            try {
+                Map<String, FileRecord> existing = Future.await(DataVerticle.fileRepository.getFilesByUniqueId(uniqueIds));
+                permanentlyFailed = existing.entrySet().stream()
+                        .filter(entry -> entry.getValue() != null
+                                && entry.getValue().isDownloadStatus(FileRecord.DownloadStatus.permanently_failed))
+                        .map(Map.Entry::getKey)
+                        .collect(Collectors.toSet());
+            } catch (Exception e) {
+                log.warn("Failed to check permanently failed files before queuing: {}", e.getMessage());
+            }
+        }
         Queue<MessageWrapper> waitingMessages = this.waitingDownloadMessages.computeIfAbsent(
                 telegramId,
                 k -> new ConcurrentLinkedQueue<>()
@@ -705,6 +721,11 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         } else {
             log.debug("Add waiting download messages: %d".formatted(messages.size()));
             TdApiHelp.filterUniqueMessages(messages).forEach(message -> {
+                String uniqueId = TdApiHelp.getFileUniqueId(message);
+                if (uniqueId != null && permanentlyFailed.contains(uniqueId)) {
+                    log.debug("Skip permanently failed message: {}", uniqueId);
+                    return;
+                }
                 int priority = calculateFilePriority(message, rule);
                 waitingMessages.add(new MessageWrapper(message, isHistorical, priority));
             });
@@ -826,6 +847,7 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         context.recordFailure(e);
         if (isPermanentMessageFailure(e)) {
             markPermanentFailure(uniqueId, messageWrapper.message());
+            removeQueuedMessage(telegramId, uniqueId);
             retryContexts.remove(uniqueId);
             publishQueueSize(telegramId, waitingDownloadMessages.getOrDefault(telegramId, new ConcurrentLinkedQueue<>()).size());
             return;
@@ -876,6 +898,16 @@ public class AutoDownloadVerticle extends AbstractVerticle {
                 })
                 .onFailure(err -> log.error("Failed to mark message permanently failed. ChatId:{} MessageId:{} UniqueId:{}", message.chatId, message.id, uniqueId, err))
                 .onSuccess(v -> log.warn("Message permanently unavailable, marked failed. ChatId:{} MessageId:{} UniqueId:{}", message.chatId, message.id, uniqueId));
+    }
+
+    private void removeQueuedMessage(long telegramId, String uniqueId) {
+        Queue<MessageWrapper> queue = waitingDownloadMessages.get(telegramId);
+        if (CollUtil.isEmpty(queue)) {
+            return;
+        }
+        if (queue.removeIf(wrapper -> uniqueId.equals(TdApiHelp.getFileUniqueId(wrapper.message())))) {
+            publishQueueSize(telegramId, queue.size());
+        }
     }
 
     private void onNewMessage(JsonObject jsonObject) {

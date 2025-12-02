@@ -886,6 +886,23 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
     }
 
     @Override
+    public Future<Boolean> isPermanentlyFailed(String uniqueId) {
+        String sql = """
+                SELECT COUNT(*) AS cnt
+                FROM file_record
+                WHERE unique_id = #{uniqueId}
+                  AND download_status = 'permanently_failed'
+                """;
+        Map<String, Object> params = Map.of("uniqueId", uniqueId);
+        return timed(sql, params,
+                SqlTemplate
+                        .forQuery(sqlClient, sql)
+                        .execute(params)
+                        .map(rows -> rows.iterator().hasNext()
+                                && rows.iterator().next().getLong("cnt") > 0));
+    }
+
+    @Override
     public Future<Void> updateTags(String uniqueId, String tags) {
         if (StrUtil.isBlank(uniqueId)) {
             return Future.succeededFuture();

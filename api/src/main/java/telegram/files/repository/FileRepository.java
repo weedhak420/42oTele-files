@@ -73,4 +73,6 @@ public interface FileRepository {
     Future<Void> deleteByUniqueId(String uniqueId);
 
     Future<Integer> deleteOrphanedRecords();
+
+    Future<Boolean> isPermanentlyFailed(String uniqueId);
 }
