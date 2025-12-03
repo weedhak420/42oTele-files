@@ -1,15 +1,17 @@
 package telegram.files;
 
+import io.vertx.core.json.JsonObject;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.stream.Collectors;
 
 public class AvgSpeed {
     private final int interval;
 
-    private final TreeMap<Long, SpeedPoint> speedPoints;
+    private final ConcurrentSkipListMap<Long, SpeedPoint> speedPoints;
 
     private final int smoothingWindowSize;
 
@@ -29,7 +31,7 @@ public class AvgSpeed {
 
     public AvgSpeed(int interval, int smoothingWindowSize) {
         this.interval = interval;
-        this.speedPoints = new TreeMap<>();
+        this.speedPoints = new ConcurrentSkipListMap<>();
         this.smoothingWindowSize = smoothingWindowSize;
     }
 
@@ -221,5 +223,13 @@ public class AvgSpeed {
     }
 
     public record SpeedStats(int interval, long avgSpeed, long medianSpeed, long maxSpeed, long minSpeed) {
+        public JsonObject toJson() {
+            return new JsonObject()
+                    .put("interval", interval)
+                    .put("avgSpeed", avgSpeed)
+                    .put("medianSpeed", medianSpeed)
+                    .put("maxSpeed", maxSpeed)
+                    .put("minSpeed", minSpeed);
+        }
     }
 }

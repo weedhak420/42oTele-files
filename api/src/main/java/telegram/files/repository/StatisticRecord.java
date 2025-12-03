@@ -13,6 +13,14 @@ public record StatisticRecord(
     public enum Type {
         speed,
 
+        apiCall,
+        responseTime,
+        downloadOutcome,
+
+        performance,
+
+        systemAlert,
+
         ;
     }
 

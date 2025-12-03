@@ -37,6 +37,18 @@ public enum EventEnum {
      * body = JSONObject with "success", "message"
      */
     MAINTAIN,
+
+    /**
+     * suffix = null <br>
+     * body = JSONObject with alert payload
+     */
+    SYSTEM_ALERT,
+
+    /**
+     * suffix = config category <br>
+     * body = JSONObject with "category", "key", "value", "oldValue"
+     */
+    CONFIGURATION_CHANGE,
     ;
 
     public String address() {

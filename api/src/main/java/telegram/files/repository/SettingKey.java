@@ -17,8 +17,21 @@ public enum SettingKey {
     /**
      * Auto download limit for each telegram account
      */
-    autoDownloadLimit(Convert::toInt),
+    autoDownloadLimit(Convert::toInt, 5),
+    autoDownloadDefaultLimit(Convert::toInt, 5),
+    autoDownloadHistoryScanInterval(Convert::toInt, 2 * 60 * 1000),
+    autoDownloadDownloadInterval(Convert::toInt, 10 * 1000),
+    autoDownloadMaxWaitingLength(Convert::toInt, 30),
+    autoDownloadScanCheckpoint(Function.identity(), "[]"),
     autoDownloadTimeLimited(value -> StrUtil.isBlank(value) ? null : new JsonObject(value).mapTo(SettingTimeLimitedDownload.class)),
+    autoDownload(value -> StrUtil.isBlank(value)
+            ? new telegram.files.ConfigurationService.AutoDownloadConfig()
+            : new telegram.files.ConfigurationService.AutoDownloadConfig(new JsonObject(value)),
+            new telegram.files.ConfigurationService.AutoDownloadConfig()),
+    maxConcurrentDownloads(Convert::toInt, 5),
+    enableAdaptiveConcurrency(Convert::toBool, true),
+    downloadRetryAttempts(Convert::toInt, 3),
+    downloadTimeout(Convert::toLong, 30 * 60 * 1000L),
     proxys(value -> StrUtil.isBlank(value) ? null : new JsonObject(value).mapTo(SettingProxyRecords.class)),
     /**
      * Interval for calculating average speed, in seconds

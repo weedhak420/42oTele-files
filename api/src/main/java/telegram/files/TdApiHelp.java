@@ -154,6 +154,26 @@ public class TdApiHelp {
                 .toList();
     }
 
+    public static String getFileType(TdApi.Message message) {
+        if (message == null || message.content == null) {
+            return "unknown";
+        }
+        return switch (message.content.getConstructor()) {
+            case TdApi.MessagePhoto.CONSTRUCTOR -> "photo";
+            case TdApi.MessageVideo.CONSTRUCTOR -> "video";
+            case TdApi.MessageAudio.CONSTRUCTOR -> "audio";
+            case TdApi.MessageDocument.CONSTRUCTOR -> "file";
+            default -> "unknown";
+        };
+    }
+
+    public static Long getFileSize(TdApi.Message message) {
+        return getFileHandler(message)
+                .map(FileHandler::getFile)
+                .map(file -> file == null ? 0L : file.size)
+                .orElse(0L);
+    }
+
     public static Integer getFileId(TdApi.Message message) {
         return getFileHandler(message).map(FileHandler::getFileId).orElse(null);
     }

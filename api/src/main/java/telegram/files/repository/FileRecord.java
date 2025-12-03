@@ -40,7 +40,13 @@ public record FileRecord(int id, //file id will change
 ) {
 
     public enum DownloadStatus {
-        idle, downloading, paused, completed, error
+        idle,
+        downloading,
+        paused,
+        completed,
+        error,
+        permanently_failed,
+        completed_but_update_failed
     }
 
     public enum TransferStatus {
@@ -102,6 +108,10 @@ public record FileRecord(int id, //file id will change
             }),
             MapUtil.entry(new Version("0.2.4"), new String[]{
                     "ALTER TABLE file_record ADD COLUMN reaction_count BIGINT DEFAULT 0;",
+            }),
+            MapUtil.entry(new Version("0.2.5"), new String[]{
+                    "CREATE INDEX IF NOT EXISTS idx_file_record_tg_status_chat ON file_record(telegram_id, download_status, chat_id);",
+                    "CREATE INDEX IF NOT EXISTS idx_file_record_unique_status ON file_record(unique_id, download_status);"
             })
     ));
 
